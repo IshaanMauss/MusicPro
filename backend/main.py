@@ -1,7 +1,7 @@
 import os
 import logging
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -24,7 +24,7 @@ DB_NAME = get_clean_env("DB_NAME", "music_app_pro")
 API_ID = get_clean_env("API_ID")
 API_HASH = get_clean_env("API_HASH")
 
-# 🟢 FIX: We look for 'BOT_TOKEN_1' first, because that is what is in your logs
+# Use BOT_TOKEN_1 to match your Render Environment
 BOT_TOKEN = get_clean_env("BOT_TOKEN_1") or get_clean_env("BOT_TOKEN")
 
 # Initialize Database
@@ -41,13 +41,11 @@ bot = TelegramClient('bot_session', real_api_id, API_HASH or "empty_hash")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # CRITICAL CHECK
     if not BOT_TOKEN or not API_ID or not API_HASH:
-        logger.error("❌ CRITICAL ERROR: 'BOT_TOKEN_1' (or API_ID/HASH) is missing.")
+        logger.error("❌ CRITICAL ERROR: Environment Variables are missing.")
     else:
-        logger.info(f"🤖 Starting Telegram Bot using token starting with {BOT_TOKEN[:5]}...")
+        logger.info(f"🤖 Starting Telegram Bot...")
         try:
-            # Force login with the found token
             await bot.start(bot_token=BOT_TOKEN)
             logger.info("✅ Bot Connected Successfully!")
         except Exception as e:
@@ -71,16 +69,41 @@ app.add_middleware(
 # --- ROUTES ---
 
 @app.get("/songs")
-async def get_songs(search: str = None, limit: int = 50, skip: int = 0):
+async def get_songs(
+    search: str = None, 
+    genre: str = 'all', 
+    mood: str = 'all', 
+    listen: str = 'all', 
+    limit: int = 100, 
+    skip: int = 0
+):
+    # Base query: Only show songs with a valid telegram message ID
     query = {"channel_message_id": {"$exists": True, "$ne": None}}
     
+    # 🔍 Apply Search Filter
     if search:
         query["$or"] = [
             {"title": {"$regex": search, "$options": "i"}},
             {"artist": {"$regex": search, "$options": "i"}}
         ]
 
-    cursor = db.songs.find(query).skip(skip).limit(limit).sort("_id", -1)
+    # 🔍 Apply Sidebar Filters (Genre, Mood, Duration)
+    if genre and genre != 'all':
+        query["genre"] = {"$regex": f"^{genre}$", "$options": "i"}
+        
+    if mood and mood != 'all':
+        # Handles both 'mood' and 'moods' fields if they exist in DB
+        query["$or"] = [
+            {"mood": {"$regex": f"^{mood}$", "$options": "i"}},
+            {"moods": {"$regex": f"^{mood}$", "$options": "i"}}
+        ]
+        
+    if listen and listen != 'all':
+        # 'listen' in your frontend maps to 'duration_category' in the DB
+        query["duration_category"] = {"$regex": f"^{listen}$", "$options": "i"}
+
+    # 🟢 SORT FIX: Set to 1 to match the original import order (Oldest/First in JSON first)
+    cursor = db.songs.find(query).skip(skip).limit(limit).sort("_id", 1)
     songs = await cursor.to_list(length=limit)
 
     results = []
@@ -91,6 +114,9 @@ async def get_songs(search: str = None, limit: int = 50, skip: int = 0):
             "artist": song.get("artist", "Unknown"),
             "album_art": song.get("album_art") or song.get("cover_url") or "",
             "duration": song.get("duration", 0),
+            "duration_category": song.get("duration_category", "Mid"),
+            "genre": song.get("genre", "all"),
+            "mood": song.get("mood") or song.get("moods") or "all",
             "msg_id": song.get("channel_message_id"), 
             "is_playable": True
         })
@@ -99,12 +125,8 @@ async def get_songs(search: str = None, limit: int = 50, skip: int = 0):
 @app.get("/stream/{msg_id}")
 async def stream_song(msg_id: int):
     try:
-        # Emergency Reconnect
         if not bot.is_connected():
-             if BOT_TOKEN:
-                 await bot.start(bot_token=BOT_TOKEN)
-             else:
-                 raise HTTPException(status_code=500, detail="Server Configuration Error")
+             await bot.start(bot_token=BOT_TOKEN)
 
         message = await bot.get_messages(None, ids=msg_id)
         if not message or not message.media:
