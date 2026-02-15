@@ -67,7 +67,6 @@ app.add_middleware(
 )
 
 # --- ROUTES ---
-
 @app.get("/songs")
 async def get_songs(
     search: str = None, 
@@ -77,50 +76,64 @@ async def get_songs(
     limit: int = 100, 
     skip: int = 0
 ):
-    # Base query: Only show songs with a valid telegram message ID
+    # 1. Base Query: Only show songs that have a valid Telegram message mapping
     query = {"channel_message_id": {"$exists": True, "$ne": None}}
     
-    # 🔍 Apply Search Filter
+    # 2. Apply Search Filter (Title or Artist)
     if search:
         query["$or"] = [
             {"title": {"$regex": search, "$options": "i"}},
             {"artist": {"$regex": search, "$options": "i"}}
         ]
 
-    # 🔍 Apply Sidebar Filters (Genre, Mood, Duration)
+    # 3. Apply Sidebar Filters (Genre, Mood, Duration)
+    # Using regex for case-insensitive matching in case Atlas data varies
     if genre and genre != 'all':
         query["genre"] = {"$regex": f"^{genre}$", "$options": "i"}
         
     if mood and mood != 'all':
-        # Handles both 'mood' and 'moods' fields if they exist in DB
+        # Check both field names commonly used in your JSON
         query["$or"] = [
             {"mood": {"$regex": f"^{mood}$", "$options": "i"}},
             {"moods": {"$regex": f"^{mood}$", "$options": "i"}}
         ]
         
     if listen and listen != 'all':
-        # 'listen' in your frontend maps to 'duration_category' in the DB
+        # 'listen' from frontend maps to 'duration_category' in your database
         query["duration_category"] = {"$regex": f"^{listen}$", "$options": "i"}
 
-    # 🟢 SORT FIX: Set to 1 to match the original import order (Oldest/First in JSON first)
-    cursor = db.songs.find(query).skip(skip).limit(limit).sort("_id", 1)
-    songs = await cursor.to_list(length=limit)
+    try:
+        # 4. Execute Query with ORIGINAL IMPORT ORDER
+        # .sort("_id", 1) ensures it follows the order of your mysongs.json
+        cursor = db.songs.find(query).skip(skip).limit(limit).sort("_id", 1)
+        songs = await cursor.to_list(length=limit)
 
-    results = []
-    for song in songs:
-        results.append({
-            "id": str(song["_id"]),
-            "title": song.get("title", "Unknown"),
-            "artist": song.get("artist", "Unknown"),
-            "album_art": song.get("album_art") or song.get("cover_url") or "",
-            "duration": song.get("duration", 0),
-            "duration_category": song.get("duration_category", "Mid"),
-            "genre": song.get("genre", "all"),
-            "mood": song.get("mood") or song.get("moods") or "all",
-            "msg_id": song.get("channel_message_id"), 
-            "is_playable": True
-        })
-    return {"results": results}
+        results = []
+        for song in songs:
+            # 5. Diagnostic ID Mapping
+            # We map 'channel_message_id' to 'msg_id' so the stream route knows exactly 
+            # which Telegram message to fetch.
+            actual_telegram_id = song.get("channel_message_id")
+            
+            results.append({
+                "id": str(song["_id"]),
+                "title": song.get("title", "Unknown"),
+                "artist": song.get("artist", "Unknown"),
+                "album_art": song.get("album_art") or song.get("cover_url") or "",
+                "duration": song.get("duration", 0),
+                "duration_category": song.get("duration_category", "Mid"),
+                "genre": song.get("genre", "all"),
+                "mood": song.get("mood") or song.get("moods") or "all",
+                "msg_id": actual_telegram_id, # THE CRITICAL KEY FOR PLAYBACK
+                "is_playable": True
+            })
+
+        logger.info(f"✅ Fetched {len(results)} songs (Order: Original, Filter: {genre}/{mood}/{listen})")
+        return {"results": results}
+
+    except Exception as e:
+        logger.error(f"❌ Database Query Error: {e}")
+        raise HTTPException(status_code=500, detail="Failed to fetch songs from database")
 
 @app.get("/stream/{msg_id}")
 async def stream_song(msg_id: int):
