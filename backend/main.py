@@ -1,4 +1,5 @@
 import os
+import logging
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -7,60 +8,53 @@ from motor.motor_asyncio import AsyncIOMotorClient
 from telethon import TelegramClient
 from dotenv import load_dotenv
 
-# 1. Load Local .env
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
 load_dotenv()
 
-# --- 🔍 DEBUG: PRINT ALL KEYS (Hidden) ---
-print("\n🔍 --- ENVIRONMENT DIAGNOSTIC ---")
-# We loop through all keys to find "close matches" in case of typos
-for key, value in os.environ.items():
-    if "API" in key or "TOKEN" in key or "MONGO" in key:
-        # Hide the actual secret, just show length and spaces
-        safe_val = value[:5] + "..." if value else "EMPTY"
-        print(f"👉 FOUND KEY: '{key}' (Length: {len(key)}) -> VALUE: {safe_val}")
-print("----------------------------------\n")
+def get_clean_env(key, default=None):
+    val = os.getenv(key, default)
+    if val:
+        return val.strip()
+    return val
 
-# 2. Robust Variable Loading (Strips spaces)
-MONGO_URL = os.getenv("MONGO_URL", "").strip()
-DB_NAME = os.getenv("DB_NAME", "music_app_pro").strip()
+MONGO_URL = get_clean_env("MONGO_URL")
+DB_NAME = get_clean_env("DB_NAME", "music_app_pro")
+API_ID = get_clean_env("API_ID")
+API_HASH = get_clean_env("API_HASH")
 
-# Try to find API_ID even if it has accidental spaces
-API_ID = os.getenv("API_ID", "").strip()
-if not API_ID:
-    # Fallback: Look for keys that look like API_ID
-    for k in os.environ:
-        if k.strip() == "API_ID":
-            API_ID = os.environ[k].strip()
+# 🟢 FIX: We look for 'BOT_TOKEN_1' first, because that is what is in your logs
+BOT_TOKEN = get_clean_env("BOT_TOKEN_1") or get_clean_env("BOT_TOKEN")
 
-API_HASH = os.getenv("API_HASH", "").strip()
-BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
-
-# 3. Database
+# Initialize Database
 client = AsyncIOMotorClient(MONGO_URL)
 db = client[DB_NAME]
 
-# 4. Bot Setup
+# Initialize Bot (Safe Mode)
 try:
-    real_api_id = int(API_ID)
-except ValueError:
-    print(f"❌ API_ID ERROR: '{API_ID}' is not a number!")
+    real_api_id = int(API_ID) if API_ID else 0
+except:
     real_api_id = 0
 
-bot = TelegramClient('bot_session', real_api_id, API_HASH)
+bot = TelegramClient('bot_session', real_api_id, API_HASH or "empty_hash")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # CRITICAL CHECK
     if not BOT_TOKEN or not API_ID or not API_HASH:
-        print("❌ CRITICAL: Variables still missing. Check the 'DIAGNOSTIC' logs above.")
+        logger.error("❌ CRITICAL ERROR: 'BOT_TOKEN_1' (or API_ID/HASH) is missing.")
     else:
-        print("🤖 Starting Telegram Bot...")
+        logger.info(f"🤖 Starting Telegram Bot using token starting with {BOT_TOKEN[:5]}...")
         try:
-            # Pass token directly to avoid input prompt
+            # Force login with the found token
             await bot.start(bot_token=BOT_TOKEN)
-            print("✅ Bot Connected Successfully!")
+            logger.info("✅ Bot Connected Successfully!")
         except Exception as e:
-            print(f"🔥 Bot Connection Failed: {e}")
+            logger.error(f"🔥 Bot Failed to Start: {e}")
+            
     yield
+    
     if bot.is_connected():
         await bot.disconnect()
 
@@ -74,17 +68,21 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# --- ROUTES ---
+
 @app.get("/songs")
 async def get_songs(search: str = None, limit: int = 50, skip: int = 0):
     query = {"channel_message_id": {"$exists": True, "$ne": None}}
+    
     if search:
         query["$or"] = [
             {"title": {"$regex": search, "$options": "i"}},
             {"artist": {"$regex": search, "$options": "i"}}
         ]
+
     cursor = db.songs.find(query).skip(skip).limit(limit).sort("_id", -1)
     songs = await cursor.to_list(length=limit)
-    
+
     results = []
     for song in songs:
         results.append({
@@ -101,22 +99,32 @@ async def get_songs(search: str = None, limit: int = 50, skip: int = 0):
 @app.get("/stream/{msg_id}")
 async def stream_song(msg_id: int):
     try:
+        # Emergency Reconnect
         if not bot.is_connected():
-             await bot.start(bot_token=BOT_TOKEN)
-             
+             if BOT_TOKEN:
+                 await bot.start(bot_token=BOT_TOKEN)
+             else:
+                 raise HTTPException(status_code=500, detail="Server Configuration Error")
+
         message = await bot.get_messages(None, ids=msg_id)
         if not message or not message.media:
-            raise HTTPException(status_code=404, detail="File not found")
+            raise HTTPException(status_code=404, detail="Audio file not found")
 
         async def iterfile():
             async for chunk in bot.iter_download(message.media):
                 yield chunk
+
+        fname = message.file.name if message.file else "audio.mp3"
+        mtype = message.file.mime_type if message.file else "audio/mpeg"
         
-        return StreamingResponse(iterfile(), media_type=message.file.mime_type)
+        return StreamingResponse(iterfile(), headers={
+            "Content-Disposition": f'inline; filename="{fname}"'
+        }, media_type=mtype)
+
     except Exception as e:
-        print(f"Streaming Error: {e}")
+        logger.error(f"Streaming Error: {e}")
         raise HTTPException(status_code=500, detail="Stream failed")
 
 @app.get("/")
 async def root():
-    return {"message": "Music Backend Live"}
+    return {"message": "Music App Backend is Live"}
