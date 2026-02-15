@@ -1,0 +1,64 @@
+# ==========================================
+# MASTER SHIELD: MusicPro Root .gitignore
+# ==========================================
+
+# --- 1. Environment Secrets (CRITICAL) ---
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+frontend/.env
+backend/.env
+
+# --- 2. Telegram Swarm Security (CRITICAL) ---
+*.session
+*.session-journal
+**/sessions/
+music_sync_session
+updater_bot_session
+bot_worker_*
+
+# --- 3. Frontend Dependencies & Build ---
+node_modules/
+frontend/node_modules/
+dist/
+frontend/dist/
+.eslintcache
+.stylelintcache
+
+# --- 4. Backend (Python) Junk ---
+__pycache__/
+**/*.py[cod]
+**/*$py.class
+backend/__pycache__/
+venv/
+.venv/
+*.log
+
+# --- 5. One-Time Cleaning Scripts (Hidden from GitHub) ---
+# We keep these locally, but they won't show on your GitHub profile.
+backend/migrate.py
+backend/mass_forwarder.py
+backend/smart_repair.py
+backend/final_indexer.py
+backend/check_db.py
+backend/check_genre.py
+backend/check_progress.py
+backend/verify_data.py
+backend/full_diagnos.py
+backend/resync_ids.py
+backend/sync_bots.py
+
+# --- 6. Data & Local DBs ---
+*.db
+*.sqlite
+songs_db.json
+duration_fix.json
+
+# --- 7. OS & Editor Specific ---
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
