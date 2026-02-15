@@ -7,31 +7,55 @@ from motor.motor_asyncio import AsyncIOMotorClient
 from telethon import TelegramClient
 from dotenv import load_dotenv
 
+# 1. Load Local .env
 load_dotenv()
 
-# Configuration
-MONGO_URL = os.getenv("MONGO_URL")
-DB_NAME = os.getenv("DB_NAME", "music_app_pro")
-API_ID = os.getenv("API_ID")
-API_HASH = os.getenv("API_HASH")
-BOT_TOKEN = os.getenv("BOT_TOKEN")
+# --- 🔍 DEBUG: PRINT ALL KEYS (Hidden) ---
+print("\n🔍 --- ENVIRONMENT DIAGNOSTIC ---")
+# We loop through all keys to find "close matches" in case of typos
+for key, value in os.environ.items():
+    if "API" in key or "TOKEN" in key or "MONGO" in key:
+        # Hide the actual secret, just show length and spaces
+        safe_val = value[:5] + "..." if value else "EMPTY"
+        print(f"👉 FOUND KEY: '{key}' (Length: {len(key)}) -> VALUE: {safe_val}")
+print("----------------------------------\n")
 
-# Database
+# 2. Robust Variable Loading (Strips spaces)
+MONGO_URL = os.getenv("MONGO_URL", "").strip()
+DB_NAME = os.getenv("DB_NAME", "music_app_pro").strip()
+
+# Try to find API_ID even if it has accidental spaces
+API_ID = os.getenv("API_ID", "").strip()
+if not API_ID:
+    # Fallback: Look for keys that look like API_ID
+    for k in os.environ:
+        if k.strip() == "API_ID":
+            API_ID = os.environ[k].strip()
+
+API_HASH = os.getenv("API_HASH", "").strip()
+BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
+
+# 3. Database
 client = AsyncIOMotorClient(MONGO_URL)
 db = client[DB_NAME]
 
-# Initialize Client
-bot = TelegramClient('bot_session', int(API_ID) if API_ID else 0, API_HASH)
+# 4. Bot Setup
+try:
+    real_api_id = int(API_ID)
+except ValueError:
+    print(f"❌ API_ID ERROR: '{API_ID}' is not a number!")
+    real_api_id = 0
+
+bot = TelegramClient('bot_session', real_api_id, API_HASH)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # CRITICAL: Prevent EOFError by checking token before starting
     if not BOT_TOKEN or not API_ID or not API_HASH:
-        print("❌ ERROR: Missing Environment Variables (BOT_TOKEN, API_ID, or API_HASH)")
+        print("❌ CRITICAL: Variables still missing. Check the 'DIAGNOSTIC' logs above.")
     else:
-        print(f"🤖 Starting Bot with token: {BOT_TOKEN[:5]}***")
+        print("🤖 Starting Telegram Bot...")
         try:
-            # We pass the token directly to avoid the interactive prompt
+            # Pass token directly to avoid input prompt
             await bot.start(bot_token=BOT_TOKEN)
             print("✅ Bot Connected Successfully!")
         except Exception as e:
@@ -58,10 +82,9 @@ async def get_songs(search: str = None, limit: int = 50, skip: int = 0):
             {"title": {"$regex": search, "$options": "i"}},
             {"artist": {"$regex": search, "$options": "i"}}
         ]
-
     cursor = db.songs.find(query).skip(skip).limit(limit).sort("_id", -1)
     songs = await cursor.to_list(length=limit)
-
+    
     results = []
     for song in songs:
         results.append({
@@ -78,6 +101,9 @@ async def get_songs(search: str = None, limit: int = 50, skip: int = 0):
 @app.get("/stream/{msg_id}")
 async def stream_song(msg_id: int):
     try:
+        if not bot.is_connected():
+             await bot.start(bot_token=BOT_TOKEN)
+             
         message = await bot.get_messages(None, ids=msg_id)
         if not message or not message.media:
             raise HTTPException(status_code=404, detail="File not found")
@@ -85,10 +111,10 @@ async def stream_song(msg_id: int):
         async def iterfile():
             async for chunk in bot.iter_download(message.media):
                 yield chunk
-
+        
         return StreamingResponse(iterfile(), media_type=message.file.mime_type)
     except Exception as e:
-        print(f"🔥 Streaming Error: {e}")
+        print(f"Streaming Error: {e}")
         raise HTTPException(status_code=500, detail="Stream failed")
 
 @app.get("/")
