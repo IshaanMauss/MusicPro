@@ -26,7 +26,12 @@ body {
   font-family: 'Urbanist', sans-serif;
   height: 100vh;
   margin: 0;
-  overflow: hidden;
+  overflow: hidden; /* Prevents whole-page bouncing on iOS */
+  
+  /* 📱 MOBILE OPTIMIZATION */
+  -webkit-tap-highlight-color: transparent; /* Removes blue box when tapping buttons */
+  overscroll-behavior-y: none; /* Prevents "pull-to-refresh" in browsers */
+  user-select: none; /* Optional: Prevents accidental text selection during touch */
 }
 
 /* 4. Glassmorphism Utilities */
@@ -50,6 +55,13 @@ body {
   scrollbar-color: rgba(255, 255, 255, 0.1) transparent;
 }
 
+/* Hide scrollbar on mobile but keep scrolling working */
+@media (max-width: 768px) {
+  .custom-scrollbar::-webkit-scrollbar {
+    display: none;
+  }
+}
+
 .custom-scrollbar::-webkit-scrollbar {
   width: 4px;
 }
@@ -67,12 +79,16 @@ body {
   background: var(--accent-color);
 }
 
-/* 6. Gradient Mask for Lyrics */
+/* 6. Mobile Height Fixes */
+/* Mobile browsers often have UI bars that mess up '100vh'. 
+   Using svh (small viewport height) is safer for mobile. */
+.h-screen-safe {
+  height: 100vh;
+  height: 100svh;
+}
+
+/* 7. Gradient Mask for Lyrics */
 .mask-image-gradient {
   mask-image: linear-gradient(to bottom, transparent 0%, black 15%, black 85%, transparent 100%);
   -webkit-mask-image: linear-gradient(to bottom, transparent 0%, black 15%, black 85%, transparent 100%);
 }
-
-/* 🟢 FIXED: Removed the buggy 'input[type="range"]' styling. 
-   The opacity-0 utility class in your JSX is enough to hide it 
-   while keeping the click physics working perfectly. */
