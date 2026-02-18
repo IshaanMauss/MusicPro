@@ -1,38 +1,37 @@
 import axios from 'axios';
 
-// 🟢 Using Vite's environment variable system
-// This pulls the URL from your frontend/.env file
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+export const API_URL = import.meta.env.PROD 
+  ? 'https://music-app-backend-twia.onrender.com' // 👈 Your actual Render Backend URL
+  : 'http://localhost:8000';
+export const api = axios.create({
+  baseURL: API_URL,
+});
 
-/**
- * Fetches songs with high-precision filtering.
- */
-export const fetchSongs = async (search = '', limit = 50, genre = 'all', mood = 'all', listen = 'all', skip = 0) => {
+// --- FETCH SONGS ---
+// 🟢 FIXED: Added 'language' to the parameter list
+export const fetchSongs = async (search, limit, genre, mood, listen, skip = 0, language = 'all') => {
   try {
-    const response = await axios.get(`${API_URL}/songs`, { 
-      params: { search, limit, genre, mood, listen, skip } 
+    console.log("📡 [API CALL] Params:", { search, genre, mood, listen, skip, language });
+
+    const response = await api.get('/songs', {
+      params: {
+        search: search || '',
+        limit: limit || 50,
+        skip: skip || 0,
+        genre: genre || 'all', 
+        mood: mood || 'all', 
+        listen: listen || 'all',
+        language: language || 'all' // 🟢 Now correctly uses the passed argument
+      },
     });
     
-    // Mapping the results to match your musicStore state structure
-    return response.data.results.map(song => ({
-      id: song.id,               
-      title: song.title,         
-      artist: song.artist, 
-      cover_url: song.album_art, 
-      msg_id: song.msg_id, 
-      is_playable: song.is_playable,
-      duration: song.duration,
-      duration_category: song.duration_category
-    }));
+    return response.data.results;
   } catch (error) {
-    console.error("API Fetch Error:", error);
+    console.error("❌ [API ERROR] Failed to fetch songs:", error);
     return [];
   }
 };
 
-/**
- * Constructs the stream URL for the Telegram-backed player.
- */
 export const getStreamUrl = (msgId) => {
   if (!msgId) return '';
   return `${API_URL}/stream/${msgId}`;

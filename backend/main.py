@@ -1,165 +1,224 @@
 import os
 import logging
-from contextlib import asynccontextmanager
-from fastapi import FastAPI, HTTPException, Query
+import re
+import httpx  # 🟢 Required for Proxy Routes
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from motor.motor_asyncio import AsyncIOMotorClient
-from telethon import TelegramClient
+from contextlib import asynccontextmanager
+from bot_manager import BotManager 
 from dotenv import load_dotenv
 
+# 1. Setup & Configuration
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-
 load_dotenv()
 
-def get_clean_env(key, default=None):
-    val = os.getenv(key, default)
-    if val:
-        return val.strip()
-    return val
+manager = BotManager()
+mongo_client = AsyncIOMotorClient(os.getenv("MONGO_URL"))
+DB_NAME = os.getenv("DB_NAME", "music_app_pro")
+db = mongo_client[DB_NAME]
 
-MONGO_URL = get_clean_env("MONGO_URL")
-DB_NAME = get_clean_env("DB_NAME", "music_app_pro")
-API_ID = get_clean_env("API_ID")
-API_HASH = get_clean_env("API_HASH")
-
-# Use BOT_TOKEN_1 to match your Render Environment
-BOT_TOKEN = get_clean_env("BOT_TOKEN_1") or get_clean_env("BOT_TOKEN")
-
-# Initialize Database
-client = AsyncIOMotorClient(MONGO_URL)
-db = client[DB_NAME]
-
-# Initialize Bot (Safe Mode)
-try:
-    real_api_id = int(API_ID) if API_ID else 0
-except:
-    real_api_id = 0
-
-bot = TelegramClient('bot_session', real_api_id, API_HASH or "empty_hash")
-
+# --- LIFECYCLE MANAGER ---
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    if not BOT_TOKEN or not API_ID or not API_HASH:
-        logger.error("❌ CRITICAL ERROR: Environment Variables are missing.")
-    else:
-        logger.info(f"🤖 Starting Telegram Bot...")
-        try:
-            await bot.start(bot_token=BOT_TOKEN)
-            logger.info("✅ Bot Connected Successfully!")
-        except Exception as e:
-            logger.error(f"🔥 Bot Failed to Start: {e}")
-            
+    print("🤖 System Starting... Initializing Bot Swarm...")
+    await manager.start()
     yield
-    
-    if bot.is_connected():
-        await bot.disconnect()
+    print("🛑 System Shutting Down... Disconnecting Bots...")
+    for worker in manager.workers:
+        if worker.client.is_connected():
+            await worker.client.disconnect()
 
 app = FastAPI(lifespan=lifespan)
 
+# --- CORS CONFIGURATION ---
 app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    CORSMiddleware, 
+    allow_origins=["*"], 
+    allow_methods=["*"], 
+    allow_headers=["*"]
 )
 
-# --- ROUTES ---
+# 🧹 HELPER: Title Cleaner (Regex Engine)
+def clean_title(title):
+    if not title: return "Unknown Title"
+    # Remove file extensions
+    title = re.sub(r'\.(mp3|m4a|flac|wav)$', '', title, flags=re.IGNORECASE)
+    
+    # Remove common video noise
+    patterns = [
+        r'\(.*?official.*?video.*?\)',
+        r'\[.*?official.*?video.*?\]',
+        r'\(.*?lyric.*?video.*?\)',
+        r'\[.*?video.*?\]',
+        r'\(.*?audio.*?\)',
+        r'\[.*?4k.*?\]',
+        r'\|.*',       # Remove anything after a pipe |
+        r'\d+kbps',    # Remove bitrates
+        r'\(.*?\d{4}.*?\)' # Try to remove years in brackets if needed
+    ]
+    for p in patterns:
+        title = re.sub(p, '', title, flags=re.IGNORECASE)
+    
+    return title.strip()
+
+# --- PROXY ROUTES (FIXES CORS & 404s) ---
+
+@app.get("/proxy/lyrics")
+async def get_lyrics(artist: str, title: str):
+    """
+    Fetches lyrics from lyrics.ovh via backend to bypass CORS.
+    """
+    url = f"https://api.lyrics.ovh/v1/{artist}/{title}"
+    async with httpx.AsyncClient() as client:
+        try:
+            resp = await client.get(url, timeout=5.0)
+            if resp.status_code == 200:
+                return resp.json()
+            return {"lyrics": ""} 
+        except Exception as e:
+            logger.error(f"Lyrics Error: {e}")
+            return {"lyrics": ""}
+
+@app.get("/proxy/wiki")
+async def get_wiki_info(query: str, fallback: str = None):
+    """
+    Fetches Wikipedia summary. Tries song specific query first, 
+    falls back to Artist name if song page is 404.
+    """
+    async with httpx.AsyncClient() as client:
+        try:
+            # 1. Try specific Query (Song)
+            url = f"https://en.wikipedia.org/api/rest_v1/page/summary/{query}"
+            resp = await client.get(url, timeout=5.0)
+            
+            if resp.status_code == 200:
+                return resp.json()
+            
+            # 2. If 404 and fallback provided, try Fallback (Artist)
+            if fallback:
+                print(f"Wiki 404 for '{query}', trying fallback '{fallback}'...")
+                url = f"https://en.wikipedia.org/api/rest_v1/page/summary/{fallback}"
+                resp = await client.get(url, timeout=5.0)
+                if resp.status_code == 200:
+                    return resp.json()
+                    
+        except Exception as e:
+            logger.error(f"Wiki Error: {e}")
+            
+    return {"extract": "No information available."}
+
+# --- MAIN API ROUTES ---
+
 @app.get("/songs")
 async def get_songs(
     search: str = None, 
     genre: str = 'all', 
     mood: str = 'all', 
-    listen: str = 'all', 
+    listen: str = 'all',  # Duration Logic
+    language: str = 'all', # 🟢 Language Logic
     limit: int = 100, 
     skip: int = 0
 ):
-    # 1. Base Query: Only show songs that have a valid Telegram message mapping
-    query = {"channel_message_id": {"$exists": True, "$ne": None}}
-    
-    # 2. Apply Search Filter (Title or Artist)
-    if search:
-        query["$or"] = [
-            {"title": {"$regex": search, "$options": "i"}},
-            {"artist": {"$regex": search, "$options": "i"}}
-        ]
+    print(f"\n📥 [API] Search='{search}' | Genre='{genre}' | Mood='{mood}' | Duration='{listen}' | Language='{language}'")
 
-    # 3. Apply Sidebar Filters (Genre, Mood, Duration)
-    # Using regex for case-insensitive matching in case Atlas data varies
-    if genre and genre != 'all':
-        query["genre"] = {"$regex": f"^{genre}$", "$options": "i"}
+    # 1. Base Exclusion Logic
+    query = {
+        "is_hidden": {"$ne": True}, 
+        "artist": {
+            "$not": {
+                "$regex": "various|unknown|unknown artist|va -", 
+                "$options": "i"
+            }
+        }
+    }
+    
+    # 2. Search Logic
+    if search:
+        search_terms = search.split()
+        and_conditions = []
+        for term in search_terms:
+            regex = {"$regex": term, "$options": "i"}
+            and_conditions.append({"$or": [{"title": regex}, {"artist": regex}]})
         
-    if mood and mood != 'all':
-        # Check both field names commonly used in your JSON
-        query["$or"] = [
-            {"mood": {"$regex": f"^{mood}$", "$options": "i"}},
-            {"moods": {"$regex": f"^{mood}$", "$options": "i"}}
-        ]
+        if and_conditions:
+            query["$and"] = and_conditions
+    
+    # 3. Filters
+    if genre and genre.lower() != 'all':
+        query["genre"] = {"$regex": genre, "$options": "i"}
         
-    if listen and listen != 'all':
-        # 'listen' from frontend maps to 'duration_category' in your database
-        query["duration_category"] = {"$regex": f"^{listen}$", "$options": "i"}
+    if mood and mood.lower() != 'all':
+        query["mood"] = {"$regex": mood, "$options": "i"}
+
+    # 🟢 Language Filter
+    if language and language.lower() != 'all':
+        query["language"] = {"$regex": language, "$options": "i"}
+        
+    # 🟢 Duration Filter
+    if listen and listen.lower() != 'all':
+        if listen == "Short":
+            query["duration_seconds"] = {"$lt": 180} 
+        elif listen == "Mid":
+            query["duration_seconds"] = {"$gte": 180, "$lte": 300} 
+        elif listen == "Long":
+            query["duration_seconds"] = {"$gt": 300} 
 
     try:
-        # 4. Execute Query with ORIGINAL IMPORT ORDER
-        # .sort("_id", 1) ensures it follows the order of your mysongs.json
-        cursor = db.songs.find(query).skip(skip).limit(limit).sort("_id", 1)
+        # Smart Sort: Genre > Title
+        cursor = db.master_library.find(query).skip(skip).limit(limit).sort([("genre", 1), ("title", 1)])
         songs = await cursor.to_list(length=limit)
 
         results = []
         for song in songs:
-            # 5. Diagnostic ID Mapping
-            # We map 'channel_message_id' to 'msg_id' so the stream route knows exactly 
-            # which Telegram message to fetch.
-            actual_telegram_id = song.get("channel_message_id")
-            
+            # Data Hygiene
+            artist_name = song.get("artist") or "Unknown Artist"
+            album_art = song.get("album_art")
+            if not album_art or str(album_art).strip() == "":
+                album_art = "https://placehold.co/300"
+
+            final_title = clean_title(song.get("title"))
+
             results.append({
                 "id": str(song["_id"]),
-                "title": song.get("title", "Unknown"),
-                "artist": song.get("artist", "Unknown"),
-                "album_art": song.get("album_art") or song.get("cover_url") or "",
-                "duration": song.get("duration", 0),
-                "duration_category": song.get("duration_category", "Mid"),
-                "genre": song.get("genre", "all"),
-                "mood": song.get("mood") or song.get("moods") or "all",
-                "msg_id": actual_telegram_id, # THE CRITICAL KEY FOR PLAYBACK
+                "title": final_title,
+                "artist": artist_name, 
+                "album_art": album_art,
+                "msg_id": song["_id"],
+                "duration": song.get("duration", "0:00"), 
+                "duration_seconds": song.get("duration_seconds", 0), 
+                "genre": str(song.get("genre", "Unknown")),
+                "mood": str(song.get("mood", "Unknown")),
+                "language": str(song.get("language", "Unknown")), # 🟢 Return Language
                 "is_playable": True
             })
-
-        logger.info(f"✅ Fetched {len(results)} songs (Order: Original, Filter: {genre}/{mood}/{listen})")
+        
+        print(f"✅ [API] Returning {len(results)} songs.")
         return {"results": results}
 
     except Exception as e:
-        logger.error(f"❌ Database Query Error: {e}")
-        raise HTTPException(status_code=500, detail="Failed to fetch songs from database")
+        logger.error(f"❌ DB Error: {e}")
+        raise HTTPException(status_code=500, detail="Database error")
 
 @app.get("/stream/{msg_id}")
 async def stream_song(msg_id: int):
-    try:
-        if not bot.is_connected():
-             await bot.start(bot_token=BOT_TOKEN)
+    worker, message = await manager.get_audio_stream(msg_id)
+    if not worker or not message:
+        raise HTTPException(status_code=404, detail="File not found")
 
-        message = await bot.get_messages(None, ids=msg_id)
-        if not message or not message.media:
-            raise HTTPException(status_code=404, detail="Audio file not found")
+    async def iterfile():
+        async for chunk in worker.client.iter_download(message.media):
+            yield chunk
 
-        async def iterfile():
-            async for chunk in bot.iter_download(message.media):
-                yield chunk
+    filename = message.file.name if message.file else "audio.mp3"
+    return StreamingResponse(
+        iterfile(),
+        media_type=message.file.mime_type or "audio/mpeg",
+        headers={"Content-Disposition": f'inline; filename="{filename}"'}
+    )
 
-        fname = message.file.name if message.file else "audio.mp3"
-        mtype = message.file.mime_type if message.file else "audio/mpeg"
-        
-        return StreamingResponse(iterfile(), headers={
-            "Content-Disposition": f'inline; filename="{fname}"'
-        }, media_type=mtype)
-
-    except Exception as e:
-        logger.error(f"Streaming Error: {e}")
-        raise HTTPException(status_code=500, detail="Stream failed")
-
-@app.get("/")
-async def root():
-    return {"message": "Music App Backend is Live"}
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)

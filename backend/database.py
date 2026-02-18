@@ -11,20 +11,20 @@ DB_NAME = os.getenv("DB_NAME", "music_app_pro")
 
 client = motor.motor_asyncio.AsyncIOMotorClient(MONGO_URL)
 
-# 🟢 Select the Database using the dynamic name
+# 🟢 Select the Database
 db = client[DB_NAME]
 
-# 🟢 Select the Collection
-songs_collection = db.songs
+# 🔴 CHANGE THIS: Point to the rebuilt collection
+songs_collection = db.master_library 
 
 def song_helper(song) -> dict:
     return {
         "id": str(song["_id"]),
         "title": song.get("title"),
-        "artist": song.get("artist"),
-        "cover_url": song.get("cover_url"),
-        "video_id": song.get("video_id"),
-        "telegram_file_id": song.get("telegram_file_id"),
+        "artist": song.get("artist", "Unknown"),
+        "album_art": song.get("album_art", "https://placehold.co/300"), # Match your rebuild schema
+        "msg_id": song.get("msg_id"), # Crucial for your streaming logic
         "genre": song.get("genre")[0] if isinstance(song.get("genre"), list) else song.get("genre", "all"),
-        "listen": song.get("listen", "all")
+        "mood": song.get("mood", "all"),
+        "is_playable": song.get("is_playable", True)
     }

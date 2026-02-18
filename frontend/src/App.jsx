@@ -1,121 +1,170 @@
-import React, { useEffect, useRef, useCallback } from 'react';
+import React, { useEffect, useRef, useState, useMemo } from 'react';
 import Sidebar from './components/Sidebar';
-import MusicPlayer from './components/MusicPlayer';
 import SongCard from './components/SongCard';
-// 🟢 FIXED: Added the missing import here
-import FullScreenPlayer from './components/FullScreenPlayer'; 
+import MusicPlayer from './components/MusicPlayer';
+import FullScreenPlayer from './components/FullScreenPlayer';
 import useMusicStore from './musicStore';
-import { ArrowLeft } from 'lucide-react';
+import { Menu, ArrowUp, ArrowLeft } from 'lucide-react';
 
 const App = () => {
-  const { 
-    songs, 
-    fetchSongs, 
-    isLoading, 
-    view, 
-    setView, 
+  const {
+    songs,
+    isLoading,
+    fetchSongs,
+    currentSong,
+    view,
+    setView,
     likedSongs,
-    searchQuery, 
-    selectedGenre, 
-    selectedMood, 
-    selectedDuration 
+    searchQuery,
+    hasMore
   } = useMusicStore();
 
-  const observer = useRef();
+  const [showTopBtn, setShowTopBtn] = useState(false);
+  const loaderRef = useRef(null);
+  const mainRef = useRef(null);
 
-  // 1. Sync Logic
+  // 1. Initial Load
   useEffect(() => {
-    if (view !== 'home') return;
-    const timeoutId = setTimeout(() => {
-      fetchSongs();
-    }, 300);
-    return () => clearTimeout(timeoutId);
-  }, [searchQuery, selectedGenre, selectedMood, selectedDuration, view, fetchSongs]);
+    fetchSongs(false);
+  }, []);
 
-  // 2. Pagination Logic
-  const lastSongElementRef = useCallback(node => {
-    if (isLoading || view !== 'home') return;
-    if (observer.current) observer.current.disconnect();
-    observer.current = new IntersectionObserver(entries => {
-      if (entries[0].isIntersecting && songs?.length >= 50) {
-        // Pagination logic hook
+  // 2. Infinite Scroll Observer
+  useEffect(() => {
+    const observer = new IntersectionObserver((entries) => {
+      const target = entries[0];
+      if (target.isIntersecting && hasMore && !isLoading && view === 'home') {
+        fetchSongs(true);
       }
+    }, {
+      root: null,
+      rootMargin: '100px',
+      threshold: 0.1
     });
-    if (node) observer.current.observe(node);
-  }, [isLoading, songs, view]);
 
-  const displaySongs = view === 'home' ? (songs || []) : (likedSongs || []);
+    if (loaderRef.current) observer.observe(loaderRef.current);
+    return () => {
+      if (loaderRef.current) observer.unobserve(loaderRef.current);
+    }
+  }, [hasMore, isLoading, view]);
+
+  // 3. Scroll Listener
+  const handleScroll = (e) => {
+    if (e.target.scrollTop > 500) setShowTopBtn(true);
+    else setShowTopBtn(false);
+  };
+
+  const scrollToTop = () => {
+    if (mainRef.current) mainRef.current.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
+  // 🟢 LOGICAL FIX: MEMOIZATION
+  // This prevents the expensive filter operation from blocking the UI on unrelated re-renders
+  // (like progress bar updates or volume changes).
+  const filteredSongs = useMemo(() => {
+    const displaySongs = view === 'liked' ? likedSongs : songs;
+
+    if (!searchQuery) return displaySongs;
+
+    const query = searchQuery.toLowerCase();
+    return displaySongs.filter((song) => {
+      const title = song.title ? song.title.toLowerCase() : "";
+      const artist = song.artist ? song.artist.toLowerCase() : "";
+      return title.includes(query) || artist.includes(query);
+    });
+  }, [songs, likedSongs, view, searchQuery]);
 
   return (
-    <div className="flex h-screen bg-[#070707] text-white overflow-hidden font-sans">
-      <div className="w-72 h-full flex-shrink-0">
+    <div className="flex h-screen bg-black text-white overflow-hidden font-sans">
+      <div className="hidden md:block z-40">
         <Sidebar />
       </div>
 
-      <main className="flex-1 flex flex-col relative overflow-hidden bg-gradient-to-br from-[#0a0a0a] via-[#070707] to-black">
-        
-        {/* --- HEADER --- */}
-        <div className="p-10 pb-6 flex justify-between items-end min-h-[160px]">
-          <div className="animate-in fade-in slide-in-from-left duration-700">
-            <h2 className="text-[10px] uppercase tracking-[0.5em] text-accent font-bold mb-3 opacity-80">
-              {view === 'home' ? 'CURATED FOR YOU' : 'YOUR COLLECTION'}
-            </h2>
-            <h1 className="text-5xl font-heading font-bold tracking-tight">
-              {view === 'home' ? 'The Masterpiece Montage' : 'Liked Songs'}
-            </h1>
-            <div className="h-1 w-20 bg-accent mt-4 rounded-full shadow-[0_0_15px_rgba(71,208,208,0.5)]"></div>
-          </div>
+      <div className="flex-1 flex flex-col h-full relative md:pl-72 transition-all duration-300">
 
-          {/* BACK BUTTON */}
-          {view === 'liked' && (
-            <button 
-              onClick={() => setView('home')}
-              className="group flex items-center gap-2 px-6 py-2.5 rounded-full border border-white/10 text-xs font-bold uppercase tracking-widest text-gray-400 hover:text-white hover:bg-white/5 transition-all hover:border-white/30"
-            >
-              <ArrowLeft size={14} className="group-hover:-translate-x-1 transition-transform" />
-              Back to Library
-            </button>
-          )}
+        {/* Mobile Header */}
+        <div className="md:hidden p-4 flex items-center justify-between bg-black/50 backdrop-blur-md sticky top-0 z-30">
+          <h1 className="text-xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-emerald-400 to-cyan-500">
+            VibeStream
+          </h1>
+          <button className="p-2 text-zinc-400">
+            <Menu size={24} />
+          </button>
         </div>
 
-        {/* --- GRID --- */}
-        <div className="flex-1 overflow-y-auto px-10 pb-40 custom-scrollbar scroll-smooth">
-          {isLoading && displaySongs.length === 0 ? (
-            <div className="flex flex-col items-center justify-center h-64 gap-4">
-              <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-accent"></div>
-              <p className="text-[10px] uppercase tracking-widest text-gray-500 font-bold">Loading Library...</p>
-            </div>
-          ) : (
-            <div className="grid grid-cols-2 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6 gap-8 pb-10">
-              {displaySongs.map((song, index) => {
-                const isLast = index === displaySongs.length - 1;
-                return (
-                  <div key={`${song.id}-${index}`} ref={isLast ? lastSongElementRef : null}>
-                    <SongCard song={song} />
-                  </div>
-                );
-              })}
-            </div>
-          )}
-          
-          {displaySongs.length === 0 && !isLoading && (
-            <div className="flex flex-col items-center justify-center h-64 text-center">
-              <p className="text-gray-600 uppercase tracking-widest text-xs font-bold opacity-50 mb-4">
-                {view === 'home' ? 'No songs match these filters' : 'Your collection is empty'}
+        <main
+          ref={mainRef}
+          onScroll={handleScroll}
+          className="flex-1 overflow-y-auto p-4 md:p-8 pb-32 custom-scrollbar relative scroll-smooth"
+        >
+          {/* HEADER */}
+          <header className="mb-8 flex items-end justify-between">
+            <div>
+              <h1 className="text-3xl md:text-4xl font-bold mb-2 tracking-tight">
+                {view === 'liked' ? 'Liked Songs' : 'Discover'}
+              </h1>
+              <p className="text-zinc-400">
+                {view === 'liked' ? 'Your personal collection' : `Exploring Library (${filteredSongs.length} loaded)`}
               </p>
-              {view === 'liked' && (
-                <button onClick={() => setView('home')} className="text-accent text-sm hover:underline">
-                  Go find some music
-                </button>
+            </div>
+
+            {view === 'liked' && (
+              <button
+                onClick={() => setView('home')}
+                className="flex items-center gap-2 px-4 py-2 bg-zinc-800 hover:bg-zinc-700 rounded-full text-sm font-medium transition-colors"
+              >
+                <ArrowLeft size={16} /> Back to Library
+              </button>
+            )}
+          </header>
+
+          {/* SONG GRID */}
+          {/* ... inside the grid div ... */}
+          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-6">
+            {filteredSongs.map((song, index) => (
+              // 🟢 NUCLEAR FIX: Combine ID with Index to guarantee uniqueness
+              <SongCard
+                key={`${song.id}-${index}`}
+                song={song}
+              />
+            ))}
+          </div>
+
+          {/* Loading Sentinel */}
+          {view === 'home' && (
+            <div ref={loaderRef} className="h-24 flex items-center justify-center mt-8 w-full">
+              {isLoading && (
+                <div className="flex flex-col items-center gap-2">
+                  <div className="w-8 h-8 border-2 border-emerald-500 border-t-transparent rounded-full animate-spin" />
+                  <span className="text-xs text-zinc-500">Loading more vibes...</span>
+                </div>
+              )}
+              {!hasMore && filteredSongs.length > 0 && (
+                <span className="text-zinc-600 text-sm font-medium">You've reached the end! 🎵</span>
               )}
             </div>
           )}
-        </div>
 
-        {/* 🟢 FLOATING LAYERS */}
-        <MusicPlayer />
-        <FullScreenPlayer /> 
-      </main>
+          {!isLoading && filteredSongs.length === 0 && (
+            <div className="text-center text-zinc-500 mt-20">
+              <p>No songs found.</p>
+            </div>
+          )}
+        </main>
+
+        <button
+          onClick={scrollToTop}
+          className={`absolute bottom-24 right-8 p-3 bg-emerald-500 text-black rounded-full shadow-[0_0_20px_rgba(16,185,129,0.4)] transition-all duration-300 z-40 hover:scale-110 active:scale-95 ${showTopBtn ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-10 pointer-events-none'}`}
+        >
+          <ArrowUp size={24} />
+        </button>
+
+        {currentSong && (
+          <>
+            <MusicPlayer />
+            <FullScreenPlayer />
+          </>
+        )}
+      </div>
     </div>
   );
 };

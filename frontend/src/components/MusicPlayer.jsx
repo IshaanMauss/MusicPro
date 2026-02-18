@@ -1,5 +1,5 @@
-import React, { useEffect, useRef, useState } from 'react';
-import { Play, Pause, SkipBack, SkipForward, Volume2, VolumeX, Maximize2, Heart } from 'lucide-react';
+import React, { useRef, useEffect } from 'react';
+import { Play, Pause, SkipBack, SkipForward, Volume2, VolumeX, Maximize2, Heart, ChevronUp } from 'lucide-react';
 import useMusicStore from '../musicStore';
 import { getStreamUrl } from '../api';
 
@@ -8,13 +8,10 @@ const MusicPlayer = () => {
     currentSong, isPlaying, pauseSong, resumeSong, toggleLike,
     likedSongs, playNext, playPrev, currentTime, setCurrentTime,
     setPlayerOpen, isPlayerOpen,
-    // 🟢 GLOBAL VOLUME
     volume, isMuted, setVolume, toggleMute
   } = useMusicStore();
 
   const audioRef = useRef(null);
-  const [progress, setProgress] = useState(currentTime || 0);
-  const [duration, setDuration] = useState(0);
 
   const isLiked = currentSong && likedSongs.some(s => s.id === currentSong.id);
 
@@ -22,163 +19,177 @@ const MusicPlayer = () => {
   useEffect(() => {
     if (currentSong && audioRef.current) {
       const url = getStreamUrl(currentSong.msg_id);
-      if (audioRef.current.src !== url) {
+
+      // 🟢 SYNC FIX: If reloading page, sync audio time to stored time
+      const isNewSource = audioRef.current.src !== url;
+
+      if (isNewSource) {
         audioRef.current.src = url;
         audioRef.current.load();
-        if (isPlaying) audioRef.current.play().catch(() => {});
-      } else if (audioRef.current.currentTime === 0 && currentTime > 0) {
-        audioRef.current.currentTime = currentTime;
+
+        // Restore time if we have one saved (and it's a resume)
+        if (currentTime > 0) {
+          audioRef.current.currentTime = currentTime;
+        }
+
+        if (isPlaying) audioRef.current.play().catch(() => { });
+      } else if (isPlaying) {
+        audioRef.current.play().catch(() => { });
+      } else {
+        audioRef.current.pause();
       }
     }
-  }, [currentSong]);
+  }, [currentSong, isPlaying]);
 
-  useEffect(() => {
-    if (!audioRef.current) return;
-    if (isPlaying) audioRef.current.play().catch(() => {});
-    else audioRef.current.pause();
-  }, [isPlaying]);
-
-  // 🟢 SYNC AUDIO ELEMENT WITH STORE VOLUME
   useEffect(() => {
     if (audioRef.current) {
-      audioRef.current.volume = volume; // Store handles 0 logic for mute
+      audioRef.current.volume = volume;
       audioRef.current.muted = isMuted;
     }
   }, [volume, isMuted]);
 
   const handleTimeUpdate = () => {
-    if (audioRef.current) {
-      const curr = audioRef.current.currentTime;
-      setProgress(curr);
-      setDuration(audioRef.current.duration || 0);
-      if (Math.abs(curr - currentTime) > 1) setCurrentTime(curr);
-    }
+    if (audioRef.current) setCurrentTime(audioRef.current.currentTime);
   };
 
-  const formatTime = (time) => {
-    if (!time) return "0:00";
-    const mins = Math.floor(time / 60);
-    const secs = Math.floor(time % 60);
-    return `${mins}:${secs.toString().padStart(2, '0')}`;
+  const handleSeek = (e) => {
+    const newTime = parseFloat(e.target.value);
+    if (audioRef.current) audioRef.current.currentTime = newTime;
+    setCurrentTime(newTime);
   };
 
   if (!currentSong) return null;
+
+  const duration = audioRef.current?.duration || 100;
+  // Ensure we never get > 100% or NaN
+  const progressPercent = Math.min(100, Math.max(0, (currentTime / duration) * 100)) || 0;
 
   return (
     <>
       <audio
         ref={audioRef}
-        onTimeUpdate={handleTimeUpdate}
         onEnded={playNext}
-        onLoadedMetadata={() => {
-          if (currentTime > 0 && Math.abs(audioRef.current.currentTime - currentTime) > 1) {
-            audioRef.current.currentTime = currentTime;
-          }
-        }}
+        onTimeUpdate={handleTimeUpdate}
       />
 
-      {!isPlayerOpen && (
-        <div className="fixed bottom-0 left-0 right-0 bg-black/80 backdrop-blur-2xl border-t border-white/10 p-4 flex items-center justify-between z-[100] animate-in fade-in slide-in-from-bottom duration-500 shadow-[0_-10px_40px_rgba(0,0,0,0.5)]">
-          {/* INFO */}
-          <div className="flex items-center gap-4 w-1/4">
-            <div className="w-16 h-16 rounded-xl overflow-hidden shadow-[0_4px_20px_rgba(0,0,0,0.5)] ring-1 ring-white/10 relative group">
-              <img src={currentSong.cover_url} alt="" className="w-full h-full object-cover group-hover:scale-110 transition-transform duration-700" />
+      {/* PLAYER BAR */}
+      <div className={`fixed bottom-0 left-0 right-0 bg-black/90 backdrop-blur-xl border-t border-white/10 transition-transform duration-300 z-50 ${isPlayerOpen ? 'translate-y-full' : 'translate-y-0'}`}>
+        <div className="max-w-screen-2xl mx-auto px-4 h-20 flex items-center justify-between gap-4">
+
+          {/* 1. Song Info */}
+          <div className="flex items-center gap-4 w-[30%] min-w-[140px]">
+            <div className="relative group cursor-pointer" onClick={() => setPlayerOpen(true)}>
+              <img
+                src={currentSong.album_art || "https://placehold.co/300"}
+                alt={currentSong.title}
+                className="w-12 h-12 rounded-md object-cover shadow-lg group-hover:opacity-80 transition-opacity"
+              />
+              <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 bg-black/40 rounded-md">
+                <ChevronUp size={20} className="text-white" />
+              </div>
             </div>
-            <div className="flex flex-col overflow-hidden">
-              <h4 className="text-white font-bold text-sm truncate pr-4">{currentSong.title}</h4>
-              <p className="text-gray-400 text-xs truncate">{currentSong.artist}</p>
+            <div className="overflow-hidden hidden sm:block">
+              <h4 className="text-white font-medium truncate text-sm">{currentSong.title}</h4>
+              <p className="text-zinc-400 text-xs truncate">{currentSong.artist}</p>
             </div>
-            <button
-              onClick={() => toggleLike(currentSong)}
-              className={`ml-2 p-2 rounded-full hover:bg-white/10 transition-all active:scale-90 ${isLiked ? 'text-accent' : 'text-gray-500 hover:text-white'}`}
-            >
-              <Heart size={20} fill={isLiked ? "currentColor" : "none"} />
+            <button onClick={() => toggleLike(currentSong)} className={`hidden md:block ml-2 ${isLiked ? 'text-emerald-500 fill-emerald-500' : 'text-zinc-400'}`}>
+              <Heart size={18} fill={isLiked ? "currentColor" : "none"} />
             </button>
           </div>
 
-          {/* CONTROLS */}
-          <div className="flex flex-col items-center gap-2 flex-1 max-w-2xl px-8">
-            <div className="flex items-center gap-6">
-              <button onClick={playPrev} className="text-gray-400 hover:text-white transition-colors hover:scale-110 active:scale-95">
-                <SkipBack size={24} fill="currentColor" />
-              </button>
-              
+          {/* 2. Controls & Progress */}
+          <div className="flex flex-col items-center flex-1 max-w-lg">
+            <div className="flex items-center gap-6 mb-1">
+              <button onClick={playPrev} className="text-zinc-400 hover:text-white transition-colors"><SkipBack size={20} /></button>
               <button
                 onClick={isPlaying ? pauseSong : resumeSong}
-                className="w-14 h-14 bg-white rounded-full flex items-center justify-center text-black hover:scale-105 transition-transform shadow-[0_0_20px_rgba(255,255,255,0.3)]"
+                className="w-8 h-8 bg-white rounded-full flex items-center justify-center text-black hover:scale-110 transition-transform"
               >
-                {isPlaying ? <Pause size={28} fill="currentColor" /> : <Play size={28} fill="currentColor" className="ml-1" />}
+                {isPlaying ? <Pause size={18} fill="currentColor" /> : <Play size={18} fill="currentColor" className="ml-0.5" />}
               </button>
-
-              <button onClick={playNext} className="text-gray-400 hover:text-white transition-colors hover:scale-110 active:scale-95">
-                <SkipForward size={24} fill="currentColor" />
-              </button>
+              <button onClick={playNext} className="text-zinc-400 hover:text-white transition-colors"><SkipForward size={20} /></button>
             </div>
 
-            <div className="w-full flex items-center gap-3 text-[10px] text-gray-500 font-mono">
-              <span className="w-8 text-right">{formatTime(progress)}</span>
-              <div className="relative flex-1 h-1 group cursor-pointer">
-                <input
-                  type="range"
-                  min="0"
-                  max={duration || 100}
-                  value={progress}
-                  onChange={(e) => {
-                    const newTime = parseFloat(e.target.value);
-                    setProgress(newTime);
-                    audioRef.current.currentTime = newTime;
-                    setCurrentTime(newTime);
-                  }}
-                  className="absolute w-full h-1 opacity-0 z-20 cursor-pointer"
-                />
-                <div className="absolute w-full h-1 bg-white/10 rounded-full overflow-hidden">
-                  <div
-                    className="h-full bg-accent shadow-[0_0_10px_rgba(71,208,208,0.5)] relative"
-                    style={{ width: `${(progress / (duration || 1)) * 100}%` }}
-                  ></div>
-                </div>
+            {/* PROGRESS BAR */}
+            <div className="w-full flex items-center gap-3 text-[10px] text-zinc-500 font-medium font-mono">
+              <span className="w-8 text-right">{formatTime(currentTime)}</span>
+
+              <div className="relative flex-1 h-1 bg-zinc-800 rounded-full group cursor-pointer">
+                {(() => {
+                  // 🟢 LOGICAL FIX: Use duration_seconds from DB if audio element isn't ready yet
+                  const realDuration = (audioRef.current && !isNaN(audioRef.current.duration))
+                    ? audioRef.current.duration
+                    : (currentSong.duration_seconds || 0);
+
+                  const barWidth = realDuration > 0 ? Math.min((currentTime / realDuration) * 100, 100) : 0;
+
+                  return (
+                    <>
+                      <div
+                        className="absolute top-0 left-0 h-full bg-emerald-500 rounded-full transition-all duration-100"
+                        style={{ width: `${barWidth}%` }}
+                      />
+                      <div
+                        className="absolute top-1/2 -translate-y-1/2 w-3 h-3 bg-white rounded-full shadow opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none"
+                        style={{ left: `${barWidth}%` }}
+                      />
+                      <input
+                        type="range"
+                        min="0"
+                        max={realDuration || 100}
+                        value={currentTime}
+                        onChange={handleSeek}
+                        className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
+                      />
+                    </>
+                  );
+                })()}
               </div>
-              <span className="w-8">{formatTime(duration)}</span>
+
+              <span className="w-8">{formatTime(audioRef.current?.duration || currentSong.duration_seconds)}</span>
             </div>
           </div>
 
-          {/* VOLUME & MAXIMIZE */}
-          <div className="w-1/4 flex justify-end items-center gap-4 text-gray-400 pr-4">
-            <div className="flex items-center gap-3 group bg-white/5 px-3 py-2 rounded-full border border-white/5 hover:border-white/10 transition-all">
-              <button onClick={toggleMute} className="hover:text-white transition-colors">
+          {/* 3. Volume & Expand */}
+          <div className="flex items-center justify-end gap-3 w-[30%] min-w-[140px]">
+            <div className="flex items-center gap-2 group w-24 sm:w-32 relative z-10">
+              <button onClick={toggleMute} className="text-zinc-400 hover:text-white">
                 {isMuted || volume === 0 ? <VolumeX size={18} /> : <Volume2 size={18} />}
               </button>
-
-              <div className="relative w-24 h-1 cursor-pointer">
+              <div className="relative flex-1 h-1 bg-zinc-800 rounded-full">
                 <input
-                  type="range"
-                  min="0"
-                  max="1"
-                  step="0.01"
+                  type="range" min="0" max="1" step="0.01"
                   value={isMuted ? 0 : volume}
                   onChange={(e) => setVolume(parseFloat(e.target.value))}
-                  className="absolute w-full h-full opacity-0 z-20 cursor-pointer"
+                  className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-20"
                 />
-                <div className="absolute w-full h-1 bg-white/20 rounded-full overflow-hidden">
-                  <div
-                    className="h-full bg-gradient-to-r from-accent/50 to-accent"
-                    style={{ width: `${(isMuted ? 0 : volume) * 100}%` }}
-                  ></div>
-                </div>
+                <div
+                  className="h-full bg-emerald-500 rounded-full pointer-events-none"
+                  style={{ width: `${(isMuted ? 0 : volume) * 100}%` }}
+                />
               </div>
             </div>
-
             <button
               onClick={() => setPlayerOpen(true)}
-              className="hover:text-white transition-colors p-2 hover:bg-white/10 rounded-full"
+              className="p-2 text-zinc-400 hover:text-white hover:bg-white/10 rounded-full transition-colors z-20 relative"
             >
               <Maximize2 size={18} />
             </button>
           </div>
+
         </div>
-      )}
+      </div>
     </>
   );
+};
+const formatTime = (time) => {
+  // 🟢 LOGICAL FIX: Handle null, undefined, strings, and NaN
+  const totalSeconds = parseFloat(time);
+  if (isNaN(totalSeconds) || totalSeconds <= 0) return "0:00";
+
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = Math.floor(totalSeconds % 60);
+  return `${minutes}:${seconds < 10 ? '0' : ''}${seconds}`;
 };
 
 export default MusicPlayer;
