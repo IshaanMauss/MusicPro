@@ -1,14 +1,33 @@
 import axios from 'axios';
 
+// 🟢 Logic: Automatically switches between local and production Render URLs
 export const API_URL = import.meta.env.PROD 
-  ? 'https://music-app-backend-twia.onrender.com' // 👈 Your actual Render Backend URL
+  ? 'https://music-app-backend-twia.onrender.com' 
   : 'http://localhost:8000';
+
 export const api = axios.create({
   baseURL: API_URL,
 });
 
+// --- 🛡️ AUTH INTERCEPTOR ---
+// This ensures that if a user is logged in, their JWT token is sent with every request
+api.interceptors.request.use((config) => {
+  try {
+    const storage = localStorage.getItem('music-pro-storage-v16');
+    if (storage) {
+      const parsed = JSON.parse(storage);
+      const token = parsed.state?.user?.access_token;
+      if (token) {
+        config.headers.Authorization = `Bearer ${token}`;
+      }
+    }
+  } catch (error) {
+    console.error("Auth Interceptor Error:", error);
+  }
+  return config;
+});
+
 // --- FETCH SONGS ---
-// 🟢 FIXED: Added 'language' to the parameter list
 export const fetchSongs = async (search, limit, genre, mood, listen, skip = 0, language = 'all') => {
   try {
     console.log("📡 [API CALL] Params:", { search, genre, mood, listen, skip, language });
@@ -21,7 +40,7 @@ export const fetchSongs = async (search, limit, genre, mood, listen, skip = 0, l
         genre: genre || 'all', 
         mood: mood || 'all', 
         listen: listen || 'all',
-        language: language || 'all' // 🟢 Now correctly uses the passed argument
+        language: language || 'all' 
       },
     });
     

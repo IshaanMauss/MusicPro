@@ -22,10 +22,23 @@ logger = logging.getLogger(__name__)
 load_dotenv()
 
 # --- AUTH CONFIGURATION ---
-SECRET_KEY = os.getenv("JWT_SECRET", "VIBE_STREAM_SUPER_SECRET_99")
+# 🟢 Logic: Prioritize the secret from Render environment; fallback only for local dev
+# --- SECURE AUTH CONFIGURATION ---
+# Logic: Only pull from the environment. No hardcoded fallback.
+SECRET_KEY = os.getenv("JWT_SECRET")
+
+if not SECRET_KEY:
+    # This will show up in your Render logs if you forgot to add the variable
+    logger.error("❌ CRITICAL: JWT_SECRET not found in environment variables!")
+    # In production, it is safer to raise an error than to use a weak default
+    raise RuntimeError("JWT_SECRET must be set in environment variables")
+
+ALGORITHM = "HS256"
+ACCESS_TOKEN_EXPIRE_DAYS = 30
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_DAYS = 30
 
+# Using pbkdf2_sha256 for Python 3.13 stability
 pwd_context = CryptContext(schemes=["pbkdf2_sha256"], deprecated="auto")
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="auth/login")
 
@@ -45,7 +58,7 @@ class UserStateSync(BaseModel):
     volume: float = 0.7
     selected_language: str = "all"
 
-# --- LIFECYCLE MANAGER (Preserved) ---
+# --- LIFECYCLE MANAGER ---
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     print("🤖 System Starting... Initializing Bot Swarm...")
@@ -58,12 +71,18 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 
-# --- 100% LOGICAL CORS FIX ---
+# --- 100% LOGICAL PRODUCTION CORS FIX ---
+# This resolves the '400 Bad Request' on OPTIONS by explicitly allowing the production origin
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173", "https://music-app-backend-twia.onrender.com"],
-    allow_credentials=True, # 🟢 MANDATORY for JWT headers
-    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"], # 🟢 Be explicit
+    allow_origins=[
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+        "https://music-app-backend-twia.onrender.com",
+        "https://vibestream.onrender.com" # 🟢 Add your actual frontend URL here
+    ],
+    allow_credentials=True,
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["*"],
 )
 
