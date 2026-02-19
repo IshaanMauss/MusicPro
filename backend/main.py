@@ -73,17 +73,20 @@ app = FastAPI(lifespan=lifespan)
 
 # --- 100% LOGICAL PRODUCTION CORS FIX ---
 # This resolves the '400 Bad Request' on OPTIONS by explicitly allowing the production origin
+# --- 100% LOGICAL PRODUCTION CORS FIX ---
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
         "http://localhost:5173",
         "http://127.0.0.1:5173",
         "https://music-app-backend-twia.onrender.com",
-        "https://vibestream.onrender.com" # 🟢 Add your actual frontend URL here
+        "https://vibestream.onrender.com",  # 🟢 Replace with your EXACT frontend URL
+        "*" # 🛡️ For debugging: allow all origins to confirm the fix
     ],
-    allow_credentials=True,
-    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-    allow_headers=["*"],
+    allow_credentials=True, 
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"], 
+    allow_headers=["Authorization", "Content-Type", "Accept", "X-Requested-With"], # 🟢 Explicitly allow Authorization
+    expose_headers=["*"],
 )
 
 # --- AUTH HELPERS ---

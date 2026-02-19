@@ -11,7 +11,13 @@ export const api = axios.create({
 
 // --- 🛡️ AUTH INTERCEPTOR ---
 // This ensures that if a user is logged in, their JWT token is sent with every request
+// --- 🛡️ IMPROVED AUTH INTERCEPTOR ---
 api.interceptors.request.use((config) => {
+  // 🛑 LOGIC: Do NOT add Authorization header to login or register routes
+  if (config.url.includes('/auth/')) {
+    return config;
+  }
+
   try {
     const storage = localStorage.getItem('music-pro-storage-v16');
     if (storage) {
@@ -25,8 +31,9 @@ api.interceptors.request.use((config) => {
     console.error("Auth Interceptor Error:", error);
   }
   return config;
+}, (error) => {
+  return Promise.reject(error);
 });
-
 // --- FETCH SONGS ---
 export const fetchSongs = async (search, limit, genre, mood, listen, skip = 0, language = 'all') => {
   try {
