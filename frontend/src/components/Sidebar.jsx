@@ -1,10 +1,11 @@
 import React from 'react';
 import { motion } from 'framer-motion';
-import { LayoutGrid, Heart, Search, RotateCcw, Music2, ChevronDown } from 'lucide-react';
+import { LayoutGrid, Heart, Search, RotateCcw, Music2, ChevronDown, LogOut } from 'lucide-react';
 import useMusicStore from '../musicStore';
 
 const Sidebar = () => {
   const { 
+    user, logout, // 🟢 Auth Actions
     view, setView, 
     likedSongs,
     searchQuery, setSearchQuery,
@@ -99,7 +100,6 @@ const Sidebar = () => {
             ]}
           />
 
-          {/* 🟢 LOGICAL FIX: MATCHED TO DATABASE BUCKETS */}
           <FilterSelect 
             label="Language"
             value={selectedLanguage}
@@ -110,7 +110,7 @@ const Sidebar = () => {
               {v: "Hindi", t: "Hindi"},
               {v: "Bengali", t: "Bengali"},
               {v: "Punjabi", t: "Punjabi"},
-              {v: "Others", t: "Others (K-Pop, Tamil, etc.)"} 
+              {v: "Others", t: "Others (K-Pop, etc.)"} 
             ]}
           />
 
@@ -144,7 +144,22 @@ const Sidebar = () => {
       </div>
 
       {/* FOOTER */}
-      <div className="p-6 border-t border-white/5 mt-auto bg-black/40 backdrop-blur-md">
+      <div className="p-6 border-t border-white/5 mt-auto bg-black/40 backdrop-blur-md flex flex-col gap-3">
+        {/* 🟢 User Info & Logout */}
+        <div className="flex items-center justify-between px-2 mb-2">
+            <div className="flex flex-col">
+                <span className="text-[10px] uppercase text-zinc-500 font-bold">Logged in as</span>
+                <span className="text-sm text-emerald-500 font-medium truncate max-w-[120px]">{user?.username}</span>
+            </div>
+            <button 
+                onClick={logout}
+                className="p-2 text-zinc-500 hover:text-red-400 hover:bg-red-400/10 rounded-lg transition-all"
+                title="Logout"
+            >
+                <LogOut size={18} />
+            </button>
+        </div>
+
         <motion.button 
           whileHover={{ scale: 1.02 }}
           whileTap={{ scale: 0.98 }}
@@ -159,7 +174,7 @@ const Sidebar = () => {
   );
 };
 
-// 🟢 Reusable Nav Item
+// Reusable Nav Item
 const NavItem = ({ active, onClick, icon, label, badge }) => (
   <motion.button 
     whileHover={{ x: 5 }}
@@ -182,7 +197,7 @@ const NavItem = ({ active, onClick, icon, label, badge }) => (
   </motion.button>
 );
 
-// 🟢 Reusable Filter Select with Black Background Logic
+// Reusable Filter Select
 const FilterSelect = ({ value, onChange, options }) => (
   <div className="relative">
     <select 

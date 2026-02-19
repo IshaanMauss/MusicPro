@@ -3,11 +3,14 @@ import Sidebar from './components/Sidebar';
 import SongCard from './components/SongCard';
 import MusicPlayer from './components/MusicPlayer';
 import FullScreenPlayer from './components/FullScreenPlayer';
+import Login from './components/Login'; // 🟢 Premium Login component
 import useMusicStore from './musicStore';
 import { Menu, ArrowUp, ArrowLeft } from 'lucide-react';
+import { Toaster } from 'react-hot-toast'; // 🟢 Premium Toasts
 
 const App = () => {
   const {
+    user, // 🟢 Auth State for the Logic Gate
     songs,
     isLoading,
     fetchSongs,
@@ -23,12 +26,14 @@ const App = () => {
   const loaderRef = useRef(null);
   const mainRef = useRef(null);
 
-  // 1. Initial Load
+  // 1. Initial Load (Triggered only if user is authenticated)
   useEffect(() => {
-    fetchSongs(false);
-  }, []);
+    if (user) {
+      fetchSongs(false);
+    }
+  }, [user, fetchSongs]); // fetchSongs included to satisfy dependency rules
 
-  // 2. Infinite Scroll Observer
+  // 2. Infinite Scroll Observer (Retained for Music Library)
   useEffect(() => {
     const observer = new IntersectionObserver((entries) => {
       const target = entries[0];
@@ -45,9 +50,9 @@ const App = () => {
     return () => {
       if (loaderRef.current) observer.unobserve(loaderRef.current);
     }
-  }, [hasMore, isLoading, view]);
+  }, [hasMore, isLoading, view, fetchSongs]); //
 
-  // 3. Scroll Listener
+  // 3. Scroll Listener (For Top Button)
   const handleScroll = (e) => {
     if (e.target.scrollTop > 500) setShowTopBtn(true);
     else setShowTopBtn(false);
@@ -57,12 +62,9 @@ const App = () => {
     if (mainRef.current) mainRef.current.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
-  // 🟢 LOGICAL FIX: MEMOIZATION
-  // This prevents the expensive filter operation from blocking the UI on unrelated re-renders
-  // (like progress bar updates or volume changes).
+  // 4. Memoized Filter Engine (Retained for performance)
   const filteredSongs = useMemo(() => {
     const displaySongs = view === 'liked' ? likedSongs : songs;
-
     if (!searchQuery) return displaySongs;
 
     const query = searchQuery.toLowerCase();
@@ -71,10 +73,23 @@ const App = () => {
       const artist = song.artist ? song.artist.toLowerCase() : "";
       return title.includes(query) || artist.includes(query);
     });
-  }, [songs, likedSongs, view, searchQuery]);
+  }, [songs, likedSongs, view, searchQuery]); //
+
+  // 🛡️ 100% LOGIC GATE: Show Login if no user is authenticated
+  if (!user) {
+    return (
+      <>
+        <Toaster position="top-center" reverseOrder={false} />
+        <Login />
+      </>
+    );
+  }
 
   return (
     <div className="flex h-screen bg-black text-white overflow-hidden font-sans">
+      {/* Premium Toast Notifications Container */}
+      <Toaster position="top-center" reverseOrder={false} />
+
       <div className="hidden md:block z-40">
         <Sidebar />
       </div>
@@ -117,11 +132,9 @@ const App = () => {
             )}
           </header>
 
-          {/* SONG GRID */}
-          {/* ... inside the grid div ... */}
+          {/* SONG GRID (Retained with unique key fix) */}
           <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-6">
             {filteredSongs.map((song, index) => (
-              // 🟢 NUCLEAR FIX: Combine ID with Index to guarantee uniqueness
               <SongCard
                 key={`${song.id}-${index}`}
                 song={song}
@@ -129,7 +142,7 @@ const App = () => {
             ))}
           </div>
 
-          {/* Loading Sentinel */}
+          {/* Loading Sentinel (Retained for Infinite Scroll) */}
           {view === 'home' && (
             <div ref={loaderRef} className="h-24 flex items-center justify-center mt-8 w-full">
               {isLoading && (
@@ -151,6 +164,7 @@ const App = () => {
           )}
         </main>
 
+        {/* Floating Scroll to Top Button */}
         <button
           onClick={scrollToTop}
           className={`absolute bottom-24 right-8 p-3 bg-emerald-500 text-black rounded-full shadow-[0_0_20px_rgba(16,185,129,0.4)] transition-all duration-300 z-40 hover:scale-110 active:scale-95 ${showTopBtn ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-10 pointer-events-none'}`}
@@ -158,6 +172,7 @@ const App = () => {
           <ArrowUp size={24} />
         </button>
 
+        {/* Playback Controls */}
         {currentSong && (
           <>
             <MusicPlayer />

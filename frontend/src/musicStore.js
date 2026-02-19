@@ -1,10 +1,15 @@
 import { create } from 'zustand';
 import { persist, createJSONStorage } from 'zustand/middleware';
 import { fetchSongs as fetchSongsApi } from './api'; 
+import axios from 'axios';
+import { API_URL } from './api';
 
 const useMusicStore = create(
   persist(
     (set, get) => ({
+      // --- AUTH & USER STATE ---
+      user: null, // Stores { username, access_token }
+
       // --- CORE STATE ---
       songs: [],
       currentSong: null,
@@ -31,7 +36,56 @@ const useMusicStore = create(
       selectedDuration: 'all',
       selectedLanguage: 'all', 
 
-      // --- SETTERS ---
+      // --- AUTH ACTIONS ---
+      login: async (username, password) => {
+        try {
+          const res = await axios.post(`${API_URL}/auth/login`, { username, password });
+          const { access_token, state } = res.data;
+          
+          set({ user: { username, access_token } });
+
+          // Merge Cloud State into the Store
+          if (state) {
+            set({
+              likedSongs: state.liked_songs || [],
+              volume: state.volume ?? 0.7,
+              selectedLanguage: state.selected_language || "all"
+            });
+          }
+          return { success: true };
+        } catch (error) {
+          throw error;
+        }
+      },
+
+      logout: () => {
+        set({ user: null, likedSongs: [], currentSong: null, isPlaying: false });
+        // Clear local storage to prevent session leakage
+        localStorage.removeItem('music-pro-storage-v16');
+      },
+
+      // --- CLOUD SYNC ENGINE ---
+      syncToCloud: async () => {
+        const { user, likedSongs, currentSong, volume, selectedLanguage } = get();
+        if (!user?.access_token) return;
+
+        try {
+          await axios.post(
+            `${API_URL}/user/sync`, 
+            {
+              liked_songs: likedSongs,
+              current_song: currentSong,
+              volume: volume,
+              selected_language: selectedLanguage
+            },
+            { headers: { Authorization: `Bearer ${user.access_token}` } }
+          );
+        } catch (e) {
+          console.error("Cloud Sync Failed:", e);
+        }
+      },
+
+      // --- SETTERS (With Auto-Sync) ---
       setView: (v) => set({ view: v }),
       setCurrentTime: (time) => set({ currentTime: time }),
       setPlayerOpen: (isOpen) => set({ isPlayerOpen: isOpen }),
@@ -55,27 +109,29 @@ const useMusicStore = create(
       setLanguage: (language) => {
         set({ selectedLanguage: language, skip: 0, songs: [], hasMore: true });
         get().fetchSongs();
+        get().syncToCloud(); // Sync language preference
       },
       
       setVolume: (vol) => {
         if (vol === 0) set({ volume: 0, isMuted: true });
         else set({ volume: vol, isMuted: false, prevVolume: vol });
+        get().syncToCloud(); // Sync volume preference
       },
 
       toggleMute: () => {
         const { isMuted, volume, prevVolume } = get();
         if (isMuted) set({ isMuted: false, volume: prevVolume || 0.7 });
         else set({ isMuted: true, prevVolume: volume, volume: 0 });
+        get().syncToCloud();
       },
 
-      // --- FETCH SONGS (DOUBLE-LOCK DEDUPLICATION) ---
+      // --- FETCH SONGS (Preserving Double-Lock Deduplication) ---
       fetchSongs: async (isLoadMore = false) => {
         const { 
           searchQuery, selectedGenre, selectedMood, selectedDuration, selectedLanguage, 
           skip, songs, hasMore, isLoading 
         } = get();
         
-        // 🔒 LOCK: Prevent race conditions
         if (isLoading) return; 
         if (isLoadMore && !hasMore) return; 
 
@@ -92,27 +148,19 @@ const useMusicStore = create(
           const newRawSongs = results || [];
           
           set((state) => {
-            // 1. Determine base list
             const baseSongs = isLoadMore ? state.songs : [];
-            
-            // 2. Combine arrays (Old + New)
             const combinedSongs = [...baseSongs, ...newRawSongs];
 
-            // 3. 🛡️ DOUBLE-LOCK DEDUPLICATION ENGINE
             const uniqueSongs = [];
             const seenIds = new Set();
             const seenSignatures = new Set();
 
             combinedSongs.forEach(song => {
-                // Generate Unique Keys
                 const idKey = String(song.id);
-                // Signature: "Tum Hi Ho|Arijit Singh" (removes case/space diffs)
                 const cleanTitle = (song.title || "").toLowerCase().replace(/[^a-z0-9]/g, "");
                 const cleanArtist = (song.artist || "").toLowerCase().replace(/[^a-z0-9]/g, "");
                 const sigKey = `${cleanTitle}|${cleanArtist}`;
 
-                // 🛑 CHECK: Is this ID new? AND Is this Song Content new?
-                // If either exists, we skip (it's a duplicate)
                 if (!seenIds.has(idKey) && !seenSignatures.has(sigKey)) {
                     seenIds.add(idKey);
                     seenSignatures.add(sigKey);
@@ -128,7 +176,6 @@ const useMusicStore = create(
             };
           });
 
-          // Recursive check for empty pages (if filter removed everything)
           if (newRawSongs.length > 0 && get().songs.length === 0 && isLoadMore) {
              get().fetchSongs(true);
           }
@@ -139,8 +186,11 @@ const useMusicStore = create(
         }
       },
 
-      // --- PLAYBACK (Unchanged) ---
-      setCurrentSong: (song) => set({ currentSong: song, isPlaying: true, currentTime: 0 }),
+      // --- PLAYBACK ---
+      setCurrentSong: (song) => {
+        set({ currentSong: song, isPlaying: true, currentTime: 0 });
+        get().syncToCloud(); // Sync last played song
+      },
       pauseSong: () => set({ isPlaying: false }),
       resumeSong: () => set({ isPlaying: true }),
       
@@ -149,7 +199,7 @@ const useMusicStore = create(
         const activeList = view === 'home' ? songs : likedSongs;
         const index = activeList.findIndex(s => String(s.id) === String(currentSong?.id));
         if (index !== -1 && index < activeList.length - 1) {
-            set({ currentSong: activeList[index + 1], isPlaying: true, currentTime: 0 });
+            get().setCurrentSong(activeList[index + 1]);
         }
       },
       
@@ -158,11 +208,11 @@ const useMusicStore = create(
         const activeList = view === 'home' ? songs : likedSongs;
         const index = activeList.findIndex(s => String(s.id) === String(currentSong?.id));
         if (index > 0) {
-            set({ currentSong: activeList[index - 1], isPlaying: true, currentTime: 0 });
+            get().setCurrentSong(activeList[index - 1]);
         }
       },
 
-      // 🛡️ TOGGLE LIKE (ID Safe)
+      // --- LIKED SONGS (With Auto-Sync) ---
       toggleLike: (song) => {
         const { likedSongs } = get();
         const songId = String(song.id);
@@ -173,6 +223,7 @@ const useMusicStore = create(
         } else {
             set({ likedSongs: [...likedSongs, song] });
         }
+        get().syncToCloud(); // Permanent cloud save
       },
 
       resetFilters: () => {
@@ -184,9 +235,10 @@ const useMusicStore = create(
       },
     }),
     {
-      name: 'music-pro-storage-v16', // 🟢 V16: Ensures fresh start
+      name: 'music-pro-storage-v16',
       storage: createJSONStorage(() => localStorage),
       partialize: (state) => ({ 
+        user: state.user, // Important: keep the user logged in
         likedSongs: state.likedSongs,
         volume: state.volume,
         isMuted: state.isMuted,
