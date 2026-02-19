@@ -4,37 +4,33 @@ import { fetchSongs as fetchSongsApi } from './api';
 import axios from 'axios';
 import { API_URL } from './api';
 
+// 🟢 Define a "Factory Default" state for clean handovers
+const initialState = {
+  songs: [],
+  currentSong: null,
+  isPlaying: false,
+  isLoading: false,
+  likedSongs: [], 
+  view: 'home', // 🛡️ Always start fresh at the Discover page
+  currentTime: 0, 
+  isPlayerOpen: false,
+  skip: 0,
+  hasMore: true,
+  searchQuery: '',
+  selectedGenre: 'all',
+  selectedMood: 'all',
+  selectedDuration: 'all',
+  selectedLanguage: 'all', 
+};
+
 const useMusicStore = create(
   persist(
     (set, get) => ({
-      // --- AUTH & USER STATE ---
-      user: null, // Stores { username, access_token }
-
-      // --- CORE STATE ---
-      songs: [],
-      currentSong: null,
-      isPlaying: false,
-      isLoading: false,
-      likedSongs: [], 
-      view: 'home', 
-      currentTime: 0, 
-      isPlayerOpen: false,
-
-      // --- PAGINATION STATE ---
-      skip: 0,
-      hasMore: true,
-
-      // --- GLOBAL VOLUME STATE ---
+      ...initialState,
+      user: null, 
       volume: 0.7,
       isMuted: false,
-      prevVolume: 0.7, 
-
-      // --- FILTER STATE ---
-      searchQuery: '',
-      selectedGenre: 'all',
-      selectedMood: 'all',
-      selectedDuration: 'all',
-      selectedLanguage: 'all', 
+      prevVolume: 0.7,
 
       // --- AUTH ACTIONS ---
       login: async (username, password) => {
@@ -42,9 +38,10 @@ const useMusicStore = create(
           const res = await axios.post(`${API_URL}/auth/login`, { username, password });
           const { access_token, state } = res.data;
           
-          set({ user: { username, access_token } });
+          // 🛡️ RESET TO DEFAULTS: Scrub UI data before applying new user credentials
+          set({ ...initialState, user: { username, access_token } });
 
-          // Merge Cloud State into the Store
+          // ☁️ MERGE CLOUD STATE: Apply permanent preferences from MongoDB
           if (state) {
             set({
               likedSongs: state.liked_songs || [],
@@ -52,6 +49,9 @@ const useMusicStore = create(
               selectedLanguage: state.selected_language || "all"
             });
           }
+          
+          // 📡 Initial Fetch for the new user
+          get().fetchSongs();
           return { success: true };
         } catch (error) {
           throw error;
@@ -59,8 +59,8 @@ const useMusicStore = create(
       },
 
       logout: () => {
-        set({ user: null, likedSongs: [], currentSong: null, isPlaying: false });
-        // Clear local storage to prevent session leakage
+        // 🧹 Wipe everything back to factory defaults to prevent session leakage
+        set({ ...initialState, user: null });
         localStorage.removeItem('music-pro-storage-v16');
       },
 
@@ -109,13 +109,13 @@ const useMusicStore = create(
       setLanguage: (language) => {
         set({ selectedLanguage: language, skip: 0, songs: [], hasMore: true });
         get().fetchSongs();
-        get().syncToCloud(); // Sync language preference
+        get().syncToCloud(); 
       },
       
       setVolume: (vol) => {
         if (vol === 0) set({ volume: 0, isMuted: true });
         else set({ volume: vol, isMuted: false, prevVolume: vol });
-        get().syncToCloud(); // Sync volume preference
+        get().syncToCloud(); 
       },
 
       toggleMute: () => {
@@ -125,7 +125,7 @@ const useMusicStore = create(
         get().syncToCloud();
       },
 
-      // --- FETCH SONGS (Preserving Double-Lock Deduplication) ---
+      // --- FETCH ENGINE (With Deduplication) ---
       fetchSongs: async (isLoadMore = false) => {
         const { 
           searchQuery, selectedGenre, selectedMood, selectedDuration, selectedLanguage, 
@@ -189,7 +189,7 @@ const useMusicStore = create(
       // --- PLAYBACK ---
       setCurrentSong: (song) => {
         set({ currentSong: song, isPlaying: true, currentTime: 0 });
-        get().syncToCloud(); // Sync last played song
+        get().syncToCloud(); 
       },
       pauseSong: () => set({ isPlaying: false }),
       resumeSong: () => set({ isPlaying: true }),
@@ -212,7 +212,7 @@ const useMusicStore = create(
         }
       },
 
-      // --- LIKED SONGS (With Auto-Sync) ---
+      // --- LIKED SONGS ---
       toggleLike: (song) => {
         const { likedSongs } = get();
         const songId = String(song.id);
@@ -223,14 +223,11 @@ const useMusicStore = create(
         } else {
             set({ likedSongs: [...likedSongs, song] });
         }
-        get().syncToCloud(); // Permanent cloud save
+        get().syncToCloud(); 
       },
 
       resetFilters: () => {
-        set({ 
-          selectedGenre: 'all', selectedMood: 'all', selectedDuration: 'all', selectedLanguage: 'all', 
-          searchQuery: '', skip: 0, songs: [], hasMore: true 
-        });
+        set({ ...initialState });
         get().fetchSongs();
       },
     }),
@@ -238,12 +235,9 @@ const useMusicStore = create(
       name: 'music-pro-storage-v16',
       storage: createJSONStorage(() => localStorage),
       partialize: (state) => ({ 
-        user: state.user, // Important: keep the user logged in
+        user: state.user,
         likedSongs: state.likedSongs,
         volume: state.volume,
-        isMuted: state.isMuted,
-        currentSong: state.currentSong,
-        currentTime: state.currentTime,
         selectedLanguage: state.selectedLanguage 
       }),
     }

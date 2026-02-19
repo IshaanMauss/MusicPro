@@ -1,6 +1,6 @@
 import axios from 'axios';
 
-// 🟢 Logic: Automatically switches between local and production Render URLs
+// 🟢 LOGIC: Environment-aware URL switching
 export const API_URL = import.meta.env.PROD 
   ? 'https://music-app-backend-twia.onrender.com' 
   : 'http://localhost:8000';
@@ -9,11 +9,10 @@ export const api = axios.create({
   baseURL: API_URL,
 });
 
-// --- 🛡️ AUTH INTERCEPTOR ---
-// This ensures that if a user is logged in, their JWT token is sent with every request
-// --- 🛡️ IMPROVED AUTH INTERCEPTOR ---
+// --- 🛡️ PRODUCTION-GRADE AUTH INTERCEPTOR ---
 api.interceptors.request.use((config) => {
-  // 🛑 LOGIC: Do NOT add Authorization header to login or register routes
+  // 🛑 LOGIC: Prevent sending empty/old tokens to auth routes
+  // This ensures registration and login never fail due to "Bad Request" headers
   if (config.url.includes('/auth/')) {
     return config;
   }
@@ -23,6 +22,8 @@ api.interceptors.request.use((config) => {
     if (storage) {
       const parsed = JSON.parse(storage);
       const token = parsed.state?.user?.access_token;
+      
+      // 🟢 LOGIC: Only attach if a valid token exists for the current session
       if (token) {
         config.headers.Authorization = `Bearer ${token}`;
       }
@@ -34,6 +35,7 @@ api.interceptors.request.use((config) => {
 }, (error) => {
   return Promise.reject(error);
 });
+
 // --- FETCH SONGS ---
 export const fetchSongs = async (search, limit, genre, mood, listen, skip = 0, language = 'all') => {
   try {
@@ -58,6 +60,7 @@ export const fetchSongs = async (search, limit, genre, mood, listen, skip = 0, l
   }
 };
 
+// --- STREAMING UTILITY ---
 export const getStreamUrl = (msgId) => {
   if (!msgId) return '';
   return `${API_URL}/stream/${msgId}`;
