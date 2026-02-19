@@ -1,4 +1,5 @@
 import axios from 'axios';
+import useMusicStore from './musicStore'; // 🟢 Added to handle auto-logout
 
 // 🟢 LOGIC: Environment-aware URL switching
 export const API_URL = import.meta.env.PROD 
@@ -9,10 +10,9 @@ export const api = axios.create({
   baseURL: API_URL,
 });
 
-// --- 🛡️ PRODUCTION-GRADE AUTH INTERCEPTOR ---
+// --- 🛡️ REQUEST INTERCEPTOR (Attach Token) ---
 api.interceptors.request.use((config) => {
-  // 🛑 LOGIC: Prevent sending empty/old tokens to auth routes
-  // This ensures registration and login never fail due to "Bad Request" headers
+  // 🛑 LOGIC: Do NOT add Authorization header to login or register routes
   if (config.url.includes('/auth/')) {
     return config;
   }
@@ -36,11 +36,29 @@ api.interceptors.request.use((config) => {
   return Promise.reject(error);
 });
 
+// --- 🛡️ RESPONSE INTERCEPTOR (The Auth Guard) ---
+// This handles the "Expired Token" edge case by forcing a logout on 401 errors
+api.interceptors.response.use(
+  (response) => response, 
+  (error) => {
+    // 🛑 LOGIC: If the server returns 401, the token is dead or invalid
+    if (error.response && error.response.status === 401) {
+      console.warn("🔐 Session expired or invalid. Logging out...");
+      
+      // Access the logout action directly from the store state
+      const { logout } = useMusicStore.getState();
+      logout(); // 🧹 Clears user state and localStorage
+      
+      // Force return to home to trigger the Login Gate in App.jsx
+      window.location.href = '/'; 
+    }
+    return Promise.reject(error);
+  }
+);
+
 // --- FETCH SONGS ---
 export const fetchSongs = async (search, limit, genre, mood, listen, skip = 0, language = 'all') => {
   try {
-    console.log("📡 [API CALL] Params:", { search, genre, mood, listen, skip, language });
-
     const response = await api.get('/songs', {
       params: {
         search: search || '',
@@ -52,7 +70,6 @@ export const fetchSongs = async (search, limit, genre, mood, listen, skip = 0, l
         language: language || 'all' 
       },
     });
-    
     return response.data.results;
   } catch (error) {
     console.error("❌ [API ERROR] Failed to fetch songs:", error);
