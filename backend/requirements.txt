@@ -20,3 +20,10 @@ bcrypt
 pyjwt
 numpy
 scikit-learn
+
+# CPU-only torch build — forces pip to skip the ~2GB CUDA build entirely,
+# since Render's free tier has no GPU anyway. Must come before
+# sentence-transformers so pip resolves torch from this index first.
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch
+sentence-transformers

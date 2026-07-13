@@ -1,43 +1,37 @@
 """
 ==============================================================
-VibeStream Whisper Service
+VibeStream Whisper Service (Cloudflare Workers AI edition)
 --------------------------------------------------------------
-Production-grade Faster-Whisper singleton.
+Drop-in replacement for the local faster-whisper + torch based
+service. Same public interface (is_ready, model_info, transcribe,
+normalize_text), so voice_router.py requires ZERO changes.
 
-Features
---------
-✔ Singleton model loading
-✔ Automatic CUDA detection
-✔ CUDA verification
-✔ CPU fallback
-✔ Render compatible
-✔ Thread safe
-✔ Multilingual ready
+Why this exists
+----------------
+faster-whisper + torch together are far too heavy for Render's
+free tier (RAM/disk limits, slow/failed builds). This routes
+transcription to Cloudflare Workers AI's hosted Whisper model
+instead — same free Cloudflare account already used by
+llm_service.py for greetings, no local model weights, no torch.
+
+Requirements removed by switching to this file:
+    torch
+    faster-whisper
+(scikit-learn / sentence-transformers can stay unless you also
+want to move semantic search off-device — separate change.)
 ==============================================================
 """
 
 import logging
-import os,time
-import threading,contextlib
+import os
+import time
 from pathlib import Path
 from typing import Optional
-import torch
+
+import requests
 from dotenv import load_dotenv
 
-try:
-    from faster_whisper import WhisperModel
-except ImportError:
-    WhisperModel = None
-
-# ==========================================================
-# LOAD ENVIRONMENT VARIABLES
-# ==========================================================
-
 load_dotenv()
-
-# ==========================================================
-# LOGGER
-# ==========================================================
 
 logger = logging.getLogger("WhisperService")
 
@@ -45,10 +39,14 @@ logger = logging.getLogger("WhisperService")
 # CONFIGURATION
 # ==========================================================
 
-DEFAULT_MODEL = os.getenv(
-    "WHISPER_MODEL",
-    "small"
-)
+ACCOUNT_ID = os.getenv("CLOUDFLARE_ACCOUNT_ID")
+API_TOKEN = os.getenv("CLOUDFLARE_API_TOKEN")
+
+# Cloudflare's hosted Whisper model
+CF_WHISPER_MODEL = "@cf/openai/whisper"
+
+REQUEST_TIMEOUT = 60  # transcription can take longer than a chat call
+
 SUPPORTED_AUDIO_FORMATS = {
     ".wav",
     ".mp3",
@@ -56,374 +54,113 @@ SUPPORTED_AUDIO_FORMATS = {
     ".webm",
     ".ogg",
     ".aac",
-    ".flac"
+    ".flac",
 }
-SUPPORTED_MODELS = {
-    "tiny",
-    "base",
-    "small",
-    "medium",
-    "large-v3"
-}
-
-if DEFAULT_MODEL not in SUPPORTED_MODELS:
-
-    logger.warning(
-        "Unknown Whisper model '%s'. Using 'small'.",
-        DEFAULT_MODEL
-    )
-
-    DEFAULT_MODEL = "small"
-
-# ==========================================================
-# WHISPER SERVICE
-# ==========================================================
 
 
 class WhisperService:
     """
-    Production Whisper Service.
-
-    Loads Faster-Whisper exactly once and shares
-    the same model across the entire application.
+    Cloudflare-backed Whisper service. Loads no local model —
+    "readiness" just means Cloudflare credentials are configured.
     """
 
     _instance = None
 
-    _singleton_lock = threading.Lock()
-
     def __new__(cls):
-
         if cls._instance is None:
-
-            with cls._singleton_lock:
-
-                if cls._instance is None:
-
-                    cls._instance = super().__new__(cls)
-
+            cls._instance = super().__new__(cls)
         return cls._instance
 
-    # ------------------------------------------------------
-
     def __init__(self):
-
-        if getattr(
-            self,
-            "_initialized",
-            False
-        ):
-
+        if getattr(self, "_initialized", False):
             return
 
-        self.model = None
+        self.model_name = CF_WHISPER_MODEL
+        self.device = "cloudflare"
+        self.compute_type = "remote"
 
-        self.device = "cpu"
+        self.cloudflare_url = (
+            f"https://api.cloudflare.com/client/v4/"
+            f"accounts/{ACCOUNT_ID}/ai/run/{CF_WHISPER_MODEL}"
+        )
 
-        self.compute_type = "int8"
+        self.configured = bool(ACCOUNT_ID and API_TOKEN)
 
-        self.model_name = DEFAULT_MODEL
-
-        self.model_loaded = False
-
-        self._transcribe_lock = threading.Lock()
-
-        self._load_model()
+        if not self.configured:
+            logger.warning(
+                "Cloudflare credentials missing — voice transcription disabled. "
+                "Set CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN."
+            )
+        else:
+            logger.info("Whisper (Cloudflare Workers AI) service ready.")
 
         self._initialized = True
 
     # ======================================================
-    # CUDA DETECTION
-    # ======================================================
-
-    def _cuda_available(self) -> bool:
-        """
-        Double verification of CUDA.
-        """
-
-        try:
-
-            if not torch.cuda.is_available():
-
-                return False
-
-            torch.cuda.current_device()
-
-            torch.cuda.get_device_name(0)
-
-            return True
-
-        except Exception as exc:
-
-            logger.warning(
-                "CUDA verification failed: %s",
-                exc
-            )
-
-            return False
-
-    # ======================================================
-    # MODEL LOADER
-    # ======================================================
-
-    def _load_model(self):
-
-        logger.info("=" * 70)
-
-        logger.info(
-            "Initializing Faster-Whisper..."
-        )
-
-        logger.info(
-            "Requested Model : %s",
-            self.model_name
-        )
-
-        if WhisperModel is None:
-
-            logger.warning(
-                "faster-whisper is not installed. Voice transcription is disabled."
-            )
-
-            return
-
-        if self._cuda_available():
-
-            logger.info(
-                "CUDA detected."
-            )
-
-            try:
-
-                self.model = WhisperModel(
-
-                    self.model_name,
-
-                    device="cuda",
-
-                    compute_type="float16"
-
-                )
-
-                self.device = "cuda"
-
-                self.compute_type = "float16"
-
-                self.model_loaded = True
-
-                logger.info(
-                    "Whisper running on CUDA."
-                )
-
-            except Exception:
-
-                logger.exception(
-                    "CUDA initialization failed."
-                )
-
-                logger.info(
-                    "Switching to CPU..."
-                )
-
-                self._load_cpu()
-
-        else:
-
-            logger.info(
-                "CUDA unavailable."
-            )
-
-            self._load_cpu()
-
-        logger.info("-" * 70)
-
-        logger.info(
-            "Device       : %s",
-            self.device
-        )
-
-        logger.info(
-            "Compute Type : %s",
-            self.compute_type
-        )
-
-        logger.info(
-            "Model        : %s",
-            self.model_name
-        )
-
-        logger.info("=" * 70)
-
-    # ======================================================
-    # CPU FALLBACK
-    # ======================================================
-
-    def _load_cpu(self):
-
-        self.model = WhisperModel(
-
-            self.model_name,
-
-            device="cpu",
-
-            compute_type="int8"
-
-        )
-
-        self.device = "cpu"
-
-        self.compute_type = "int8"
-
-        self.model_loaded = True
-    # ======================================================
-    # MODEL WARMUP
-    # ======================================================
-
-    def warmup(self):
-
-        logger.info(
-
-            "Running Whisper warmup..."
-
-        )
-
-        with contextlib.suppress(Exception):
-
-            self.model.transcribe(
-
-                "warmup.wav",
-
-                beam_size=1
-
-            )
-
-        logger.info(
-
-            "Warmup finished."
-
-        )
-    # ======================================================
-    # MODEL INFORMATION
-    # ======================================================
-
-    def model_info(self):
-
-        return {
-
-            "model": self.model_name,
-
-            "device": self.device,
-
-            "compute_type": self.compute_type,
-
-            "cuda_available": torch.cuda.is_available(),
-
-            "model_loaded": self.model_loaded
-
-        }
-    # ======================================================
-    # HEALTH CHECK
+    # STATUS
     # ======================================================
 
     def is_ready(self):
+        return self.configured
 
-        return (
+    def model_info(self):
+        return {
+            "model": self.model_name,
+            "device": self.device,
+            "compute_type": self.compute_type,
+            "cuda_available": False,
+            "model_loaded": self.configured,
+        }
 
-            self.model_loaded
+    def warmup(self):
+        # Nothing to warm up — the model lives on Cloudflare's side.
+        logger.info("Cloudflare Whisper requires no local warmup.")
 
-            and
-
-            self.model is not None
-
-        )
     # ======================================================
     # AUDIO VALIDATION
     # ======================================================
 
-    def _validate_audio_file(
-        self,
-        audio_path: str
-    ):
-
+    def _validate_audio_file(self, audio_path: str):
         path = Path(audio_path)
 
         if not path.exists():
-
-            raise FileNotFoundError(
-                f"Audio file not found: {audio_path}"
-            )
+            raise FileNotFoundError(f"Audio file not found: {audio_path}")
 
         if path.stat().st_size == 0:
-
-            raise ValueError(
-                "Audio file is empty."
-            )
+            raise ValueError("Audio file is empty.")
 
         extension = path.suffix.lower()
-
         if extension not in SUPPORTED_AUDIO_FORMATS:
-
-            raise ValueError(
-
-                f"Unsupported audio format: {extension}"
-
-            )
+            raise ValueError(f"Unsupported audio format: {extension}")
 
         return path
 
     # ======================================================
-    # TRANSCRIPT NORMALIZATION
+    # TRANSCRIPT NORMALIZATION (unchanged from the original)
     # ======================================================
 
-    def normalize_text(
-
-        self,
-
-        text: str
-
-    ) -> str:
-
+    def normalize_text(self, text: str) -> str:
         if not text:
-
             return ""
 
         normalized = text.lower()
 
         corrections = {
-
             "why be i": "vibe ai",
-
             "why be": "vibe",
-
             "vive ai": "vibe ai",
-
             "vibe a i": "vibe ai",
-
             "vib ai": "vibe ai",
-
             "arjeet": "arijit",
-
             "arjeet singh": "arijit singh",
-
             "kishor": "kishore",
-
             "latta": "lata",
-
             "rafy": "rafi",
-
-            "ashabhosle": "asha bhosle"
-
+            "ashabhosle": "asha bhosle",
         }
 
         for wrong, correct in corrections.items():
-
-            normalized = normalized.replace(
-
-                wrong,
-
-                correct
-
-            )
+            normalized = normalized.replace(wrong, correct)
 
         return normalized.strip()
 
@@ -432,224 +169,101 @@ class WhisperService:
     # ======================================================
 
     def transcribe(
-
         self,
-
         audio_path: str,
-
         language: Optional[str] = None,
-
-        beam_size: int = 5
-
+        beam_size: int = 5,  # kept for interface compatibility, unused here
     ):
-
-        if WhisperModel is None or not self.is_ready():
-
+        if not self.configured:
             return {
-
                 "success": False,
-
                 "text": "",
-
                 "normalized_text": "",
-
                 "language": None,
-
                 "language_probability": None,
-
                 "segments": [],
-
                 "segment_count": 0,
-
-                "error": "Voice transcription is unavailable because faster-whisper is not installed or the model is not loaded."
-
+                "error": "Voice transcription is unavailable — Cloudflare credentials not configured.",
             }
 
-        self._validate_audio_file(
-
-            audio_path
-
-        )
+        self._validate_audio_file(audio_path)
 
         logger.info("=" * 70)
-
-        logger.info(
-
-            "Starting Whisper transcription"
-
-        )
-
-        logger.info(
-
-            "Device : %s",
-
-            self.device
-
-        )
-
-        logger.info(
-
-            "Model : %s",
-
-            self.model_name
-
-        )
-        logger.info(
-
-            "Audio : %s",
-
-            audio_path
-
-        )
+        logger.info("Starting Cloudflare Whisper transcription")
+        logger.info("Audio : %s", audio_path)
 
         try:
             start_time = time.perf_counter()
 
-            with self._transcribe_lock:
+            with open(audio_path, "rb") as f:
+                audio_bytes = f.read()
 
-                segments, info = self.model.transcribe(
+            headers = {
+                "Authorization": f"Bearer {API_TOKEN}",
+            }
 
-                audio_path,
-
-                beam_size=beam_size,
-
-                language=language or "en" ,
-
-                vad_filter=False, 
-
-                word_timestamps=False,
-
-                temperature=0.0
-
+            response = requests.post(
+                self.cloudflare_url,
+                headers=headers,
+                data=audio_bytes,
+                timeout=REQUEST_TIMEOUT,
             )
 
-            transcript = []
+            logger.info("Cloudflare Whisper Status : %s", response.status_code)
+            response.raise_for_status()
 
-            segment_data = []
+            data = response.json()
 
-            segments = list(segments)
+            if not data.get("success"):
+                raise RuntimeError(f"Cloudflare returned unsuccessful response: {data}")
 
-            logger.info(
+            result = data.get("result", {})
+            final_text = (result.get("text") or "").strip()
 
-                "Segments returned: %d",
+            # Cloudflare's whisper response includes word-level timing under "words"
+            words = result.get("words", [])
+            segment_data = [
+                {
+                    "start": round(w.get("start", 0), 2),
+                    "end": round(w.get("end", 0), 2),
+                    "text": w.get("word", ""),
+                }
+                for w in words
+            ] if words else []
 
-                len(segments)
+            elapsed = round(time.perf_counter() - start_time, 3)
+            normalized_text = self.normalize_text(final_text)
 
-        )
-
-            for segment in segments:
-
-                text = segment.text.strip()
-
-                transcript.append(text)
-
-                segment_data.append({
-
-                    "start": round(segment.start, 2),
-
-                    "end": round(segment.end, 2),
-
-                    "text": text
-
-                })
-
-            final_text = " ".join(
-
-                transcript
-
-            ).strip()
-
-            elapsed = round(
-
-                time.perf_counter() - start_time,
-
-                3
-
-            )
-
-            normalized_text = self.normalize_text(
-
-                final_text
-
-            )
-
-            logger.info(
-
-                "Transcription completed."
-
-            )
+            logger.info("Transcription completed in %.3fs", elapsed)
+            logger.info("=" * 70)
 
             return {
-
                 "success": True,
-
                 "text": final_text,
-
                 "normalized_text": normalized_text,
-
-                "language": getattr(
-
-                    info,
-
-                    "language",
-
-                    None
-
-                ),
-
-                "language_probability": getattr(
-
-                    info,
-
-                    "language_probability",
-
-                    None
-
-                ),
-
+                "language": language or "en",
+                "language_probability": None,
                 "segments": segment_data,
-
-                    "segment_count": len(
-                        segment_data
-                ),
-
+                "segment_count": len(segment_data),
                 "processing_time": elapsed,
-
                 "audio_file": str(audio_path),
-
-                "file_size": Path(
-                    audio_path
-                ).stat().st_size
-
+                "file_size": Path(audio_path).stat().st_size,
             }
 
         except Exception as exc:
-
-            logger.exception(
-
-                "Transcription failed."
-
-            )
-
+            logger.exception("Cloudflare Whisper transcription failed.")
             return {
-
                 "success": False,
-
                 "text": "",
-
                 "normalized_text": "",
-
                 "language": None,
-
                 "language_probability": None,
-
                 "segments": [],
-
                 "segment_count": 0,
-
-                "error": str(exc)
-
+                "error": str(exc),
             }
+
+
 # ==========================================================
 # GLOBAL SINGLETON
 # ==========================================================

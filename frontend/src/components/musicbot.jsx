@@ -469,7 +469,13 @@ function MusicBot() {
 
       );
 
-  }, botState !== BOT_STATES.IDLE);// Only listen when the bot is IDLE
+  }, botState !== BOT_STATES.IDLE || !isVibePage);
+  // FIX: wake-word mic listener was starting on EVERY page load, on every tab,
+  // because MusicBot renders unconditionally in App.jsx and botState defaults
+  // to IDLE on mount. It also restarted itself every time recognition timed out,
+  // which is what caused the repeating mic-access chime and blocked song playback
+  // site-wide. Now it only listens while the user is actually on the Vibe AI tab
+  // AND the bot is idle — never on Home, Search, or while a response is loading.
 
   // ... rest of your component (return statement, etc)
 
